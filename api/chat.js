@@ -1,8 +1,14 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import cors from 'cors';
 
 const app = express();
 app.use(express.json());
+app.use(cors({
+  origin: '*', // Allow all origins for dev; use your actual domain in prod
+  methods: ['POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
 
 app.post('/api/chat', async (req, res) => {
     try {
