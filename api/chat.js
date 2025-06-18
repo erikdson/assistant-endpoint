@@ -5,26 +5,94 @@ const app = express();
 app.use(express.json());
 
 app.post('/api/chat', async (req, res) => {
-  try {
-    const { message } = req.body;
+    try {
+        const { message } = req.body;
 
-    const response = await fetch('https://api.openai.com/v1/assistants/YOUR_ASSISTANT_ID/messages', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: message }]
-      })
-    });
+        // 1. Create a new thread
+        const threadRes = await fetch('https://api.openai.com/v1/threads', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+                'OpenAI-Beta': 'assistants=v2'
+            },
+            body: JSON.stringify({})
+        });
+        const threadData = await threadRes.json();
+        const threadId = threadData.id;
 
-    const data = await response.json();
-    res.status(200).json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message || 'Unknown error' });
-  }
+        // 2. Add message to thread
+        await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+                'OpenAI-Beta': 'assistants=v2'
+            },
+            body: JSON.stringify({
+                role: 'user',
+                content: message
+            })
+        });
+
+        // 3. Run the assistant on the thread
+        const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+                'OpenAI-Beta': 'assistants=v2'
+            },
+            body: JSON.stringify({
+                assistant_id: process.env.OPENAI_ASSISTANT_ID // store your assistant_id in .env!
+            })
+        });
+        const runData = await runRes.json();
+        const runId = runData.id;
+
+        // 4. Poll for completion (simple polling loop)
+        let runStatus = runData.status;
+        let attempts = 0;
+        let maxAttempts = 20;
+        while (runStatus !== 'completed' && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+                headers: {
+                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                    'OpenAI-Beta': 'assistants=v2'
+                }
+            });
+            const statusData = await statusRes.json();
+            runStatus = statusData.status;
+            attempts++;
+        }
+
+        const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'OpenAI-Beta': 'assistants=v2'
+            }
+        });
+        const messagesData = await messagesRes.json();
+
+        if (!messagesData || !Array.isArray(messagesData.data)) {
+            // Return full API response for debugging
+            return res.status(500).json({ error: 'Unexpected response from OpenAI', apiResponse: messagesData });
+        }
+
+        // Find the last assistant message
+        const assistantMsg = [...messagesData.data]
+            .reverse()
+            .find(msg => msg.role === 'assistant');
+
+        const replyText = assistantMsg?.content?.[0]?.text?.value || "No reply from assistant.";
+
+        res.status(200).json({ reply: replyText });
+
+
+    } catch (err) {
+        res.status(500).json({ error: err.message || 'Unknown error' });
+    }
 });
 
-// For Vercel: Export the app as default
 export default app;
