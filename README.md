@@ -1,6 +1,6 @@
 # Figma Make + OpenAI API Backend
 
-A minimal Node.js Express backend for securely proxying chat requests to the OpenAI Assistant API. Only for prototyping purposes.
+A minimal Node.js Express backend for securely proxying chat requests to the OpenAI Assistant API. Only for prototyping purposes and testing.
 
 ## Running locally
 
