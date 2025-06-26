@@ -4,6 +4,18 @@ import cors from 'cors';
 
 const app = express();
 app.use(express.json());
+
+// Explicit CORS headers and OPTIONS handler for all routes
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(cors({
   origin: '*', // Allow all origins for dev; use your actual domain in prod
   methods: ['POST', 'GET', 'OPTIONS'],
