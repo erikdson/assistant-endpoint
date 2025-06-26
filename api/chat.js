@@ -98,7 +98,7 @@ app.post('/api/chat', async (req, res) => {
         console.log('[API] Raw assistant message:', JSON.stringify(assistantMsg, null, 2));
 
         // Aggregate all text content from the assistant message
-        let replyText = "No reply from assistant.";
+        let replyText = null;
         if (assistantMsg && Array.isArray(assistantMsg.content)) {
           const allText = assistantMsg.content
             .filter(c => c.type === 'text' && c.text && typeof c.text.value === 'string')
@@ -116,34 +116,40 @@ app.post('/api/chat', async (req, res) => {
             }
         });
         const stepsData = await stepsRes.json();
-        let toolOutputs = undefined;
-        if (Array.isArray(stepsData.data)) {
-            for (const step of stepsData.data) {
-                if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
-                    for (const toolCall of step.tool_calls) {
-                        // Log every tool call
-                        console.log('[API] Tool call:', {
-                          name: toolCall.name,
-                          arguments: toolCall.arguments,
-                          output: toolCall.output
-                        });
-                        if (toolCall.output) {
-                            try {
-                                toolOutputs = toolOutputs || {};
-                                toolOutputs[toolCall.name] = toolCall.output;
-                                console.log('[API] Tool output for', toolCall.name, ':', JSON.stringify(toolCall.output, null, 2));
-                            } catch (e) {
-                                console.error('[API] Failed to process tool output:', e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
-        const response = toolOutputs
-            ? { reply: replyText, toolOutputs }
-            : { reply: replyText };
+        // Parse tool outputs from all tool_calls steps (robust)
+        let toolOutputs = {};
+        if (Array.isArray(stepsData.data)) {
+          for (const step of stepsData.data) {
+            if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
+              for (const toolCall of step.tool_calls) {
+                // OpenAI may nest function call info under .function
+                const toolName = toolCall.name || (toolCall.function && toolCall.function.name);
+                let output = toolCall.output || (toolCall.function && toolCall.function.output);
+                // If output is a stringified JSON, parse it
+                if (typeof output === 'string') {
+                  try { output = JSON.parse(output); } catch {}
+                }
+                if (toolName && output) {
+                  toolOutputs[toolName] = output;
+                }
+                // Log every tool call
+                console.log('[API] Tool call:', {
+                  name: toolName,
+                  arguments: toolCall.arguments,
+                  output: output
+                });
+              }
+            }
+          }
+        }
+        if (Object.keys(toolOutputs).length === 0) toolOutputs = undefined;
+
+        // Fallback logic: only return 'No reply from assistant.' if no text and no tool output
+        const response = {
+          reply: replyText || (toolOutputs ? "" : "No reply from assistant."),
+          ...(toolOutputs ? { toolOutputs } : {})
+        };
 
         console.log('[API] Final response to client:', JSON.stringify(response, null, 2));
         res.status(200).json(response);
