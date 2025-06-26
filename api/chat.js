@@ -73,6 +73,7 @@ app.post('/api/chat', async (req, res) => {
             attempts++;
         }
 
+        // Fetch messages for the reply text
         const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
             headers: {
                 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -93,8 +94,38 @@ app.post('/api/chat', async (req, res) => {
 
         const replyText = assistantMsg?.content?.[0]?.text?.value || "No reply from assistant.";
 
-        res.status(200).json({ reply: replyText });
+        // Fetch run steps to check for tool calls
+        const stepsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/steps`, {
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'OpenAI-Beta': 'assistants=v2'
+            }
+        });
+        const stepsData = await stepsRes.json();
+        let toolOutputs = undefined;
+        if (Array.isArray(stepsData.data)) {
+            for (const step of stepsData.data) {
+                if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
+                    for (const toolCall of step.tool_calls) {
+                        if (toolCall.name === 'generate_product_filters' && toolCall.output) {
+                            try {
+                                // Output is already structured JSON
+                                toolOutputs = toolOutputs || {};
+                                toolOutputs[toolCall.name] = toolCall.output;
+                            } catch (e) {
+                                // If output is not valid JSON, skip
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
+        const response = toolOutputs
+            ? { reply: replyText, toolOutputs }
+            : { reply: replyText };
+
+        res.status(200).json(response);
 
     } catch (err) {
         res.status(500).json({ error: err.message || 'Unknown error' });
