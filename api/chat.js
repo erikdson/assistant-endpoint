@@ -121,9 +121,14 @@ app.post('/api/chat', async (req, res) => {
             for (const step of stepsData.data) {
                 if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
                     for (const toolCall of step.tool_calls) {
-                        if (toolCall.name === 'generate_product_filters' && toolCall.output) {
+                        // Log every tool call
+                        console.log('[API] Tool call:', {
+                          name: toolCall.name,
+                          arguments: toolCall.arguments,
+                          output: toolCall.output
+                        });
+                        if (toolCall.output) {
                             try {
-                                // Output is already structured JSON
                                 toolOutputs = toolOutputs || {};
                                 toolOutputs[toolCall.name] = toolCall.output;
                                 console.log('[API] Tool output for', toolCall.name, ':', JSON.stringify(toolCall.output, null, 2));
