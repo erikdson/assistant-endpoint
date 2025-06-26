@@ -6,158 +6,145 @@ const app = express();
 app.use(express.json());
 app.use(cors({
   origin: '*', // Allow all origins for dev; use your actual domain in prod
-  methods: ['POST', 'OPTIONS'],
+  methods: ['POST', 'GET', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 }));
 
-app.post('/api/chat', async (req, res) => {
-    try {
-        const { message } = req.body;
-        console.log('[API] Incoming user message:', message);
+// 1. Start a new assistant run
+app.post('/api/chat/start', async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'Missing message' });
+    // 1. Create a new thread
+    const threadRes = await fetch('https://api.openai.com/v1/threads', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify({})
+    });
+    const threadData = await threadRes.json();
+    const threadId = threadData.id;
+    // 2. Add message to thread
+    await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify({
+        role: 'user',
+        content: message
+      })
+    });
+    // 3. Run the assistant on the thread
+    const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify({
+        assistant_id: process.env.OPENAI_ASSISTANT_ID
+      })
+    });
+    const runData = await runRes.json();
+    const runId = runData.id;
+    res.status(200).json({ threadId, runId });
+  } catch (err) {
+    console.error('[API] /chat/start error:', err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
+  }
+});
 
-        // 1. Create a new thread
-        const threadRes = await fetch('https://api.openai.com/v1/threads', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'Content-Type': 'application/json',
-                'OpenAI-Beta': 'assistants=v2'
-            },
-            body: JSON.stringify({})
-        });
-        const threadData = await threadRes.json();
-        const threadId = threadData.id;
-        console.log('[API] Created thread:', threadId);
+// 2. Poll for run status
+app.get('/api/chat/status', async (req, res) => {
+  try {
+    const { threadId, runId } = req.query;
+    if (!threadId || !runId) return res.status(400).json({ error: 'Missing threadId or runId' });
+    const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+    const statusData = await statusRes.json();
+    res.status(200).json({ status: statusData.status });
+  } catch (err) {
+    console.error('[API] /chat/status error:', err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
+  }
+});
 
-        // 2. Add message to thread
-        await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'Content-Type': 'application/json',
-                'OpenAI-Beta': 'assistants=v2'
-            },
-            body: JSON.stringify({
-                role: 'user',
-                content: message
-            })
-        });
-
-        // 3. Run the assistant on the thread
-        const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'Content-Type': 'application/json',
-                'OpenAI-Beta': 'assistants=v2'
-            },
-            body: JSON.stringify({
-                assistant_id: process.env.OPENAI_ASSISTANT_ID // store your assistant_id in .env!
-            })
-        });
-        const runData = await runRes.json();
-        const runId = runData.id;
-        console.log('[API] Started run:', runId);
-
-        // 4. Poll for completion (simple polling loop)
-        let runStatus = runData.status;
-        let attempts = 0;
-        let maxAttempts = 20;
-        while (runStatus !== 'completed' && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-                headers: {
-                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                    'OpenAI-Beta': 'assistants=v2'
-                }
-            });
-            const statusData = await statusRes.json();
-            runStatus = statusData.status;
-            attempts++;
+// 3. Fetch assistant reply and tool outputs
+app.get('/api/chat/result', async (req, res) => {
+  try {
+    const { threadId, runId } = req.query;
+    if (!threadId) return res.status(400).json({ error: 'Missing threadId' });
+    // Fetch latest assistant message
+    const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+    const messagesData = await messagesRes.json();
+    // Find the last assistant message
+    const assistantMsg = [...messagesData.data]
+      .reverse()
+      .find(msg => msg.role === 'assistant');
+    // Aggregate all text content from the assistant message
+    let replyText = null;
+    if (assistantMsg && Array.isArray(assistantMsg.content)) {
+      const allText = assistantMsg.content
+        .filter(c => c.type === 'text' && c.text && typeof c.text.value === 'string')
+        .map(c => c.text.value)
+        .join('\n')
+        .trim();
+      if (allText) replyText = allText;
+    }
+    // Fetch run steps for tool outputs (if runId provided)
+    let toolOutputs = {};
+    if (runId) {
+      const stepsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/steps`, {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2'
         }
-
-        // Fetch messages for the reply text
-        const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'OpenAI-Beta': 'assistants=v2'
-            }
-        });
-        const messagesData = await messagesRes.json();
-
-        if (!messagesData || !Array.isArray(messagesData.data)) {
-            // Return full API response for debugging
-            console.error('[API] Unexpected response from OpenAI (messages):', messagesData);
-            return res.status(500).json({ error: 'Unexpected response from OpenAI', apiResponse: messagesData });
-        }
-
-        // Find the last assistant message
-        const assistantMsg = [...messagesData.data]
-            .reverse()
-            .find(msg => msg.role === 'assistant');
-        console.log('[API] Raw assistant message:', JSON.stringify(assistantMsg, null, 2));
-
-        // Aggregate all text content from the assistant message
-        let replyText = null;
-        if (assistantMsg && Array.isArray(assistantMsg.content)) {
-          const allText = assistantMsg.content
-            .filter(c => c.type === 'text' && c.text && typeof c.text.value === 'string')
-            .map(c => c.text.value)
-            .join('\n')
-            .trim();
-          if (allText) replyText = allText;
-        }
-
-        // Fetch run steps to check for tool calls
-        const stepsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/steps`, {
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                'OpenAI-Beta': 'assistants=v2'
-            }
-        });
-        const stepsData = await stepsRes.json();
-
-        // Parse tool outputs from all tool_calls steps (robust)
-        let toolOutputs = {};
-        if (Array.isArray(stepsData.data)) {
-          for (const step of stepsData.data) {
-            if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
-              for (const toolCall of step.tool_calls) {
-                // OpenAI may nest function call info under .function
-                const toolName = toolCall.name || (toolCall.function && toolCall.function.name);
-                let output = toolCall.output || (toolCall.function && toolCall.function.output);
-                // If output is a stringified JSON, parse it
-                if (typeof output === 'string') {
-                  try { output = JSON.parse(output); } catch {}
-                }
-                if (toolName && output) {
-                  toolOutputs[toolName] = output;
-                }
-                // Log every tool call
-                console.log('[API] Tool call:', {
-                  name: toolName,
-                  arguments: toolCall.arguments,
-                  output: output
-                });
+      });
+      const stepsData = await stepsRes.json();
+      if (Array.isArray(stepsData.data)) {
+        for (const step of stepsData.data) {
+          if (step.type === 'tool_calls' && Array.isArray(step.tool_calls)) {
+            for (const toolCall of step.tool_calls) {
+              const toolName = toolCall.name || (toolCall.function && toolCall.function.name);
+              let output = toolCall.output || (toolCall.function && toolCall.function.output);
+              if (typeof output === 'string') {
+                try { output = JSON.parse(output); } catch {}
+              }
+              if (toolName && output) {
+                toolOutputs[toolName] = output;
               }
             }
           }
         }
-        if (Object.keys(toolOutputs).length === 0) toolOutputs = undefined;
-
-        // Fallback logic: only return 'No reply from assistant.' if no text and no tool output
-        const response = {
-          reply: replyText || (toolOutputs ? "" : "No reply from assistant."),
-          ...(toolOutputs ? { toolOutputs } : {})
-        };
-
-        console.log('[API] Final response to client:', JSON.stringify(response, null, 2));
-        res.status(200).json(response);
-
-    } catch (err) {
-        console.error('[API] Error:', err);
-        res.status(500).json({ error: err.message || 'Unknown error' });
+      }
     }
+    if (Object.keys(toolOutputs).length === 0) toolOutputs = undefined;
+    // Fallback logic
+    const response = {
+      reply: replyText || (toolOutputs ? "" : "No reply from assistant."),
+      ...(toolOutputs ? { toolOutputs } : {})
+    };
+    res.status(200).json(response);
+  } catch (err) {
+    console.error('[API] /chat/result error:', err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
+  }
 });
 
 export default app;
