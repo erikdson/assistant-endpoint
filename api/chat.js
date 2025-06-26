@@ -13,6 +13,7 @@ app.use(cors({
 app.post('/api/chat', async (req, res) => {
     try {
         const { message } = req.body;
+        console.log('[API] Incoming user message:', message);
 
         // 1. Create a new thread
         const threadRes = await fetch('https://api.openai.com/v1/threads', {
@@ -26,6 +27,7 @@ app.post('/api/chat', async (req, res) => {
         });
         const threadData = await threadRes.json();
         const threadId = threadData.id;
+        console.log('[API] Created thread:', threadId);
 
         // 2. Add message to thread
         await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
@@ -55,6 +57,7 @@ app.post('/api/chat', async (req, res) => {
         });
         const runData = await runRes.json();
         const runId = runData.id;
+        console.log('[API] Started run:', runId);
 
         // 4. Poll for completion (simple polling loop)
         let runStatus = runData.status;
@@ -84,6 +87,7 @@ app.post('/api/chat', async (req, res) => {
 
         if (!messagesData || !Array.isArray(messagesData.data)) {
             // Return full API response for debugging
+            console.error('[API] Unexpected response from OpenAI (messages):', messagesData);
             return res.status(500).json({ error: 'Unexpected response from OpenAI', apiResponse: messagesData });
         }
 
@@ -91,8 +95,18 @@ app.post('/api/chat', async (req, res) => {
         const assistantMsg = [...messagesData.data]
             .reverse()
             .find(msg => msg.role === 'assistant');
+        console.log('[API] Raw assistant message:', JSON.stringify(assistantMsg, null, 2));
 
-        const replyText = assistantMsg?.content?.[0]?.text?.value || "No reply from assistant.";
+        // Aggregate all text content from the assistant message
+        let replyText = "No reply from assistant.";
+        if (assistantMsg && Array.isArray(assistantMsg.content)) {
+          const allText = assistantMsg.content
+            .filter(c => c.type === 'text' && c.text && typeof c.text.value === 'string')
+            .map(c => c.text.value)
+            .join('\n')
+            .trim();
+          if (allText) replyText = allText;
+        }
 
         // Fetch run steps to check for tool calls
         const stepsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/steps`, {
@@ -112,8 +126,9 @@ app.post('/api/chat', async (req, res) => {
                                 // Output is already structured JSON
                                 toolOutputs = toolOutputs || {};
                                 toolOutputs[toolCall.name] = toolCall.output;
+                                console.log('[API] Tool output for', toolCall.name, ':', JSON.stringify(toolCall.output, null, 2));
                             } catch (e) {
-                                // If output is not valid JSON, skip
+                                console.error('[API] Failed to process tool output:', e);
                             }
                         }
                     }
@@ -125,9 +140,11 @@ app.post('/api/chat', async (req, res) => {
             ? { reply: replyText, toolOutputs }
             : { reply: replyText };
 
+        console.log('[API] Final response to client:', JSON.stringify(response, null, 2));
         res.status(200).json(response);
 
     } catch (err) {
+        console.error('[API] Error:', err);
         res.status(500).json({ error: err.message || 'Unknown error' });
     }
 });
