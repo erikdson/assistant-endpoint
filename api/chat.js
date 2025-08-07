@@ -24,10 +24,97 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
 }));
 
+// Tool function definitions
+const TOOL_FUNCTIONS = {
+  generate_product_filters: {
+    name: "generate_product_filters",
+    description: "Generate product filters based on user requirements and conversation context. Use this when the user describes product needs that can be translated into specific filter criteria.",
+    parameters: {
+      type: "object",
+      properties: {
+        filters: {
+          type: "object",
+          description: "The filter criteria to apply",
+          properties: {
+            loadCapacity: {
+              type: "number",
+              minimum: 1000,
+              maximum: 15000,
+              description: "Required maximum load capacity in kilograms (kg). Typical values range from 1000–15000 kg. For example, '9 tons' = 9000 kg."
+            },
+            liftHeight: {
+              type: "number",
+              minimum: 2000,
+              maximum: 8000,
+              description: "Required maximum lift height in millimeters (mm). Typical warehouse heights are 4000–7000 mm. For example, '6 meters' = 6000 mm."
+            },
+            operatingEnvironment: {
+              type: "string",
+              enum: ["indoor", "outdoor", "mixed"],
+              description: "Single-select. Where the forklift will operate. Use:\n- 'indoor' for enclosed spaces\n- 'outdoor' for outside-only use\n- 'mixed' when the user needs to operate both indoors and outdoors (e.g., warehouse + yard)"
+            },
+            floorSurface: {
+              type: "string",
+              enum: ["smooth-concrete", "rough-concrete", "asphalt", "gravel"],
+              description: "Single-select. Describes the typical ground surface. Use:\n- 'smooth-concrete' for indoor polished floors\n- 'gravel' for uneven outdoor yards\n- Use the option that matches the most common or most demanding condition."
+            },
+            aisleWidth: {
+              type: "number",
+              minimum: 2000,
+              maximum: 5000,
+              description: "Minimum aisle width available for maneuvering, in millimeters (mm). Narrow aisles require tighter turning radius."
+            },
+            budgetRange: {
+              type: "string",
+              enum: ["economy", "standard", "premium"],
+              description: "Single select. Target price category per unit. Use:\n- 'economy' for cost-sensitive buyers\n- 'standard' for balanced cost and performance\n- 'premium' for buyers seeking high-end features"
+            },
+            loadType: {
+              type: "string",
+              enum: ["pallets", "bulk", "containers", "machinery", "mixed"],
+              description: "Type of load typically handled. Use:\n- 'pallets' for standard goods\n- 'machinery' for large, irregular items\n- 'mixed' when the use case spans multiple types"
+            },
+            attachments: {
+              type: "array",
+              items: {
+                type: "string",
+                enum: ["forks", "clamp", "rotator", "side-shift", "push-pull"]
+              },
+              description: "Multiselect. Specifies required forklift attachments. For example:\n- 'clamp' for handling paper rolls\n- 'rotator' for tipping containers"
+            },
+            operatingHours: {
+              type: "string",
+              enum: ["light", "medium", "heavy", "continuous"],
+              description: "Single-select. Daily duty cycle:\n- 'light' = a few hours/day\n- 'medium' = intermittent use\n- 'heavy' = full-shift use\n- 'continuous' = 24/7 operations or multi-shift environments"
+            },
+            powerSource: {
+              type: "string",
+              enum: ["electric", "diesel", "lpg", "hybrid"],
+              description: "Single-select. Fuel or energy type:\n- 'electric' for indoor and sustainable ops\n- 'diesel' for outdoor/heavy-duty\n- 'hybrid' or 'LPG' for flexibility"
+            }
+          },
+          additionalProperties: false
+        },
+        explanation: {
+          type: "string",
+          description: "Brief explanation of why these filters were generated based on the user's requirements"
+        },
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Confidence level in the filter generation (0-1, where 1 is highest confidence)"
+        }
+      },
+      required: ["filters"]
+    }
+  }
+};
+
 // 1. Start a new assistant run
 app.post('/api/chat/start', async (req, res) => {
   try {
-    const { message, threadId: existingThreadId, history } = req.body;
+    const { message, systemInstructions, threadId: existingThreadId, history } = req.body;
     console.log('[API] /chat/start - Incoming body:', req.body);
     console.log('[API] /chat/start - existingThreadId:', existingThreadId);
     if (!message) return res.status(400).json({ error: 'Missing message' });
@@ -71,7 +158,23 @@ app.post('/api/chat/start', async (req, res) => {
       console.log('[API] /chat/start - Reusing existing threadId:', threadId);
     }
     
-    // 2. Add message to thread
+    // 2. If systemInstructions is present, add as a system message to the thread
+    if (systemInstructions) {
+      await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Beta': 'assistants=v2'
+        },
+        body: JSON.stringify({
+          role: 'system',
+          content: systemInstructions
+        })
+      });
+    }
+    
+    // 3. Add ONLY the user's message to the thread
     const msgRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
@@ -81,13 +184,13 @@ app.post('/api/chat/start', async (req, res) => {
       },
       body: JSON.stringify({
         role: 'user',
-        content: message
+        content: message // Only the user's message, NOT the full prompt
       })
     });
     const msgData = await msgRes.json();
     console.log('[API] /chat/start - Message response:', msgData);
     
-    // 3. Run the assistant on the thread
+    // 4. Run the assistant on the thread
     const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
       method: 'POST',
       headers: {
@@ -153,12 +256,32 @@ app.get('/api/chat/status', async (req, res) => {
           }
         }
       }
-      // 2. Build mock tool outputs
-      const tool_outputs = toolCalls.map(tc => ({
-        tool_call_id: tc.tool_call_id,
-        output: JSON.stringify(tc.functionArgs)
-      }));
+      
+      // 2. Process tool calls and generate outputs
+      const tool_outputs = toolCalls.map(tc => {
+        let output = {};
+        
+        if (tc.functionName === 'generate_product_filters') {
+          // For now, return the function arguments as-is (the AI will have structured them correctly)
+          // In a production system, you might want to validate against the schema here
+          output = {
+            filters: tc.functionArgs.filters || {},
+            explanation: tc.functionArgs.explanation || "Filters generated based on your requirements",
+            confidence: tc.functionArgs.confidence || 0.8
+          };
+        } else {
+          // Default behavior for unknown tools
+          output = tc.functionArgs;
+        }
+        
+        return {
+          tool_call_id: tc.tool_call_id,
+          output: JSON.stringify(output)
+        };
+      });
+      
       console.log('[API] /chat/status - Submitting tool outputs:', JSON.stringify(tool_outputs, null, 2));
+      
       // 3. Submit tool outputs
       const submitRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/submit_tool_outputs`, {
         method: 'POST',
@@ -171,6 +294,7 @@ app.get('/api/chat/status', async (req, res) => {
       });
       const submitData = await submitRes.json();
       console.log('[API] /chat/status - Tool outputs submitted:', submitData);
+      
       // 4. Poll for completion
       let pollAttempts = 0;
       let pollStatus = submitData.status;
