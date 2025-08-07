@@ -114,7 +114,7 @@ const TOOL_FUNCTIONS = {
 // 1. Start a new assistant run
 app.post('/api/chat/start', async (req, res) => {
   try {
-    const { message, threadId: existingThreadId, history } = req.body;
+    const { message, systemInstructions, threadId: existingThreadId, history } = req.body;
     console.log('[API] /chat/start - Incoming body:', req.body);
     console.log('[API] /chat/start - existingThreadId:', existingThreadId);
     if (!message) return res.status(400).json({ error: 'Missing message' });
@@ -158,7 +158,23 @@ app.post('/api/chat/start', async (req, res) => {
       console.log('[API] /chat/start - Reusing existing threadId:', threadId);
     }
     
-    // 2. Add message to thread
+    // 2. If systemInstructions is present, add as a system message to the thread
+    if (systemInstructions) {
+      await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Beta': 'assistants=v2'
+        },
+        body: JSON.stringify({
+          role: 'system',
+          content: systemInstructions
+        })
+      });
+    }
+    
+    // 3. Add ONLY the user's message to the thread
     const msgRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
@@ -168,13 +184,13 @@ app.post('/api/chat/start', async (req, res) => {
       },
       body: JSON.stringify({
         role: 'user',
-        content: message
+        content: message // Only the user's message, NOT the full prompt
       })
     });
     const msgData = await msgRes.json();
     console.log('[API] /chat/start - Message response:', msgData);
     
-    // 3. Run the assistant on the thread
+    // 4. Run the assistant on the thread
     const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
       method: 'POST',
       headers: {
