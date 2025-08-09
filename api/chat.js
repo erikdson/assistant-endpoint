@@ -24,88 +24,210 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
 }));
 
-// Tool function definitions
+// Tool function definitions - Updated to match exact user specification
 const TOOL_FUNCTIONS = {
   generate_product_filters: {
     name: "generate_product_filters",
-    description: "Generate product filters based on user requirements and conversation context. Use this when the user describes product needs that can be translated into specific filter criteria.",
+    description: "Turn user product requirements into structured filters for catalog narrowing.",
+    strict: false,
     parameters: {
       type: "object",
       properties: {
         filters: {
-          type: "object",
-          description: "The filter criteria to apply",
-          properties: {
-            loadCapacity: {
-              type: "number",
-              minimum: 1000,
-              maximum: 15000,
-              description: "Required maximum load capacity in kilograms (kg). Typical values range from 1000–15000 kg. For example, '9 tons' = 9000 kg."
-            },
-            liftHeight: {
-              type: "number",
-              minimum: 2000,
-              maximum: 8000,
-              description: "Required maximum lift height in millimeters (mm). Typical warehouse heights are 4000–7000 mm. For example, '6 meters' = 6000 mm."
-            },
-            operatingEnvironment: {
-              type: "string",
-              enum: ["indoor", "outdoor", "mixed"],
-              description: "Single-select. Where the forklift will operate. Use:\n- 'indoor' for enclosed spaces\n- 'outdoor' for outside-only use\n- 'mixed' when the user needs to operate both indoors and outdoors (e.g., warehouse + yard)"
-            },
-            floorSurface: {
-              type: "string",
-              enum: ["smooth-concrete", "rough-concrete", "asphalt", "gravel"],
-              description: "Single-select. Describes the typical ground surface. Use:\n- 'smooth-concrete' for indoor polished floors\n- 'gravel' for uneven outdoor yards\n- Use the option that matches the most common or most demanding condition."
-            },
-            aisleWidth: {
-              type: "number",
-              minimum: 2000,
-              maximum: 5000,
-              description: "Minimum aisle width available for maneuvering, in millimeters (mm). Narrow aisles require tighter turning radius."
-            },
-            budgetRange: {
-              type: "string",
-              enum: ["economy", "standard", "premium"],
-              description: "Single select. Target price category per unit. Use:\n- 'economy' for cost-sensitive buyers\n- 'standard' for balanced cost and performance\n- 'premium' for buyers seeking high-end features"
-            },
-            loadType: {
-              type: "string",
-              enum: ["pallets", "bulk", "containers", "machinery", "mixed"],
-              description: "Type of load typically handled. Use:\n- 'pallets' for standard goods\n- 'machinery' for large, irregular items\n- 'mixed' when the use case spans multiple types"
-            },
-            attachments: {
-              type: "array",
-              items: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["field", "type", "label", "value"],
+            properties: {
+              field: {
                 type: "string",
-                enum: ["forks", "clamp", "rotator", "side-shift", "push-pull"]
+                enum: [
+                  "loadCapacity",
+                  "liftHeight", 
+                  "operatingEnvironment",
+                  "floorSurface",
+                  "aisleWidth",
+                  "budgetRange",
+                  "loadType",
+                  "attachments",
+                  "operatingHours",
+                  "powerSource",
+                  "deliveryUrgency"
+                ]
               },
-              description: "Multiselect. Specifies required forklift attachments. For example:\n- 'clamp' for handling paper rolls\n- 'rotator' for tipping containers"
+              type: {
+                type: "string",
+                enum: ["singleselect", "multiselect", "range", "text"]
+              },
+              label: {
+                type: "string"
+              },
+              options: {
+                type: "array",
+                items: { type: "string" }
+              },
+              min: {
+                type: "number"
+              },
+              max: {
+                type: "number" 
+              },
+              value: {
+                oneOf: [
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "budgetRange" },
+                        type: { const: "range" }
+                      }
+                    },
+                    then: {
+                      type: "object",
+                      properties: {
+                        min: { type: "number", minimum: 0 },
+                        max: { type: "number", minimum: 0 }
+                      },
+                      required: ["min", "max"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "powerSource" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["electric", "diesel", "lpg", "hybrid"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "operatingEnvironment" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["indoor", "outdoor", "mixed"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "floorSurface" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["smooth-concrete", "rough-concrete", "asphalt", "gravel"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "loadType" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["pallets", "bulk", "containers", "machinery", "mixed"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "attachments" },
+                        type: { const: "multiselect" }
+                      }
+                    },
+                    then: {
+                      type: "array",
+                      items: {
+                        type: "string",
+                        enum: ["forks", "clamp", "rotator", "side-shift", "push-pull"]
+                      }
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "operatingHours" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["light", "medium", "heavy", "continuous"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "deliveryUrgency" },
+                        type: { const: "singleselect" }
+                      }
+                    },
+                    then: {
+                      type: "string",
+                      enum: ["immediate", "standard", "planned", "flexible"]
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "loadCapacity" },
+                        type: { const: "range" }
+                      }
+                    },
+                    then: {
+                      type: "array",
+                      items: { type: "number" },
+                      minItems: 2,
+                      maxItems: 2
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "liftHeight" },
+                        type: { const: "range" }
+                      }
+                    },
+                    then: {
+                      type: "array",
+                      items: { type: "number" },
+                      minItems: 2,
+                      maxItems: 2
+                    }
+                  },
+                  {
+                    if: {
+                      properties: {
+                        field: { const: "aisleWidth" },
+                        type: { const: "range" }
+                      }
+                    },
+                    then: {
+                      type: "array",
+                      items: { type: "number" },
+                      minItems: 2,
+                      maxItems: 2
+                    }
+                  },
+                  { type: "string" }
+                ]
+              }
             },
-            operatingHours: {
-              type: "string",
-              enum: ["light", "medium", "heavy", "continuous"],
-              description: "Single-select. Daily duty cycle:\n- 'light' = a few hours/day\n- 'medium' = intermittent use\n- 'heavy' = full-shift use\n- 'continuous' = 24/7 operations or multi-shift environments"
-            },
-            powerSource: {
-              type: "string",
-              enum: ["electric", "diesel", "lpg", "hybrid"],
-              description: "Single-select. Fuel or energy type:\n- 'electric' for indoor and sustainable ops\n- 'diesel' for outdoor/heavy-duty\n- 'hybrid' or 'LPG' for flexibility"
-            }
-          },
-          additionalProperties: false
-        },
-        explanation: {
-          type: "string",
-          description: "Brief explanation of why these filters were generated based on the user's requirements"
-        },
-        confidence: {
-          type: "number",
-          minimum: 0,
-          maximum: 1,
-          description: "Confidence level in the filter generation (0-1, where 1 is highest confidence)"
+            additionalProperties: false
+          }
         }
       },
+      additionalProperties: false,
       required: ["filters"]
     }
   }
