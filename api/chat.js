@@ -3,9 +3,19 @@ dotenv.config();
 import express from 'express';
 import fetch from 'node-fetch';
 import cors from 'cors';
+import multer from 'multer';
+import { FormData } from 'formdata-node';
 
 const app = express();
 app.use(express.json());
+
+// Configure multer for file uploads
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024 // 20MB limit
+  }
+});
 
 // Explicit CORS headers and OPTIONS handler for all routes
 app.use((req, res, next) => {
@@ -233,10 +243,57 @@ const TOOL_FUNCTIONS = {
   }
 };
 
+// File upload endpoint - uploads files to OpenAI and returns file IDs
+app.post('/api/chat/upload', upload.any(), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    const fileIds = [];
+    
+    // Upload each file to OpenAI
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      
+      // Create FormData for OpenAI Files API
+      const formData = new FormData();
+      formData.append('file', new Blob([file.buffer], { type: file.mimetype }), file.originalname);
+      formData.append('purpose', 'assistants');
+
+      // Upload to OpenAI Files API
+      const uploadRes = await fetch('https://api.openai.com/v1/files', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: formData
+      });
+
+      const uploadData = await uploadRes.json();
+      
+      if (uploadData.error) {
+        console.error('OpenAI file upload error:', uploadData.error);
+        return res.status(500).json({ 
+          error: `Failed to upload ${file.originalname}: ${uploadData.error.message}` 
+        });
+      }
+
+      fileIds.push(uploadData.id);
+      console.log(`[API] File uploaded successfully: ${file.originalname} -> ${uploadData.id}`);
+    }
+
+    res.status(200).json({ fileIds });
+  } catch (err) {
+    console.error('[API] /chat/upload error:', err);
+    res.status(500).json({ error: err.message || 'Unknown error' });
+  }
+});
+
 // 1. Start a new assistant run
 app.post('/api/chat/start', async (req, res) => {
   try {
-    const { message, systemInstructions, threadId: existingThreadId, history } = req.body;
+    const { message, systemInstructions, threadId: existingThreadId, history, fileIds } = req.body;
     console.log('[API] /chat/start - Incoming body:', req.body);
     console.log('[API] /chat/start - existingThreadId:', existingThreadId);
     if (!message) return res.status(400).json({ error: 'Missing message' });
@@ -296,7 +353,21 @@ app.post('/api/chat/start', async (req, res) => {
       });
     }
     
-    // 3. Add ONLY the user's message to the thread
+    // 3. Add ONLY the user's message to the thread, with file attachments if provided
+    const messagePayload = {
+      role: 'user',
+      content: message // Only the user's message, NOT the full prompt
+    };
+
+    // Add file attachments if provided
+    if (fileIds && Array.isArray(fileIds) && fileIds.length > 0) {
+      messagePayload.attachments = fileIds.map(fileId => ({
+        file_id: fileId,
+        tools: [{ type: 'file_search' }] // Enable file search for attached files
+      }));
+      console.log('[API] /chat/start - Adding file attachments:', messagePayload.attachments);
+    }
+
     const msgRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
@@ -304,10 +375,7 @@ app.post('/api/chat/start', async (req, res) => {
         'Content-Type': 'application/json',
         'OpenAI-Beta': 'assistants=v2'
       },
-      body: JSON.stringify({
-        role: 'user',
-        content: message // Only the user's message, NOT the full prompt
-      })
+      body: JSON.stringify(messagePayload)
     });
     const msgData = await msgRes.json();
     console.log('[API] /chat/start - Message response:', msgData);
@@ -366,20 +434,38 @@ app.get('/api/chat/status', async (req, res) => {
         for (const step of stepsData.data) {
           if (step.type === 'tool_calls' && Array.isArray(step.step_details?.tool_calls)) {
             for (const toolCall of step.step_details.tool_calls) {
-              const tool_call_id = toolCall.id;
-              const functionName = toolCall.function?.name;
-              let functionArgs = {};
-              try {
-                functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
-              } catch {}
-              toolCalls.push({ tool_call_id, functionName, functionArgs });
-              console.log('[API] /chat/status - Tool call detected:', { tool_call_id, functionName, functionArgs });
+              // Only process function calls, not file_search or other built-in tools
+              if (toolCall.type === 'function') {
+                const tool_call_id = toolCall.id;
+                const functionName = toolCall.function?.name;
+                let functionArgs = {};
+                try {
+                  functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
+                } catch {}
+                toolCalls.push({ tool_call_id, functionName, functionArgs });
+                console.log('[API] /chat/status - Function call detected:', { tool_call_id, functionName, functionArgs });
+              } else {
+                console.log('[API] /chat/status - Skipping built-in tool call:', { id: toolCall.id, type: toolCall.type });
+              }
             }
           }
         }
       }
       
-      // 2. Process tool calls and generate outputs
+      // 2. Process tool calls and generate outputs (only for function calls)
+      if (toolCalls.length === 0) {
+        console.log('[API] /chat/status - No function calls to process, checking if run completed');
+        // No function calls need responses, check if run is complete
+        const recheckRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'OpenAI-Beta': 'assistants=v2'
+          }
+        });
+        const recheckData = await recheckRes.json();
+        return res.status(200).json({ status: recheckData.status });
+      }
+
       const tool_outputs = toolCalls.map(tc => {
         let output = {};
         
@@ -402,7 +488,7 @@ app.get('/api/chat/status', async (req, res) => {
         };
       });
       
-      console.log('[API] /chat/status - Submitting tool outputs:', JSON.stringify(tool_outputs, null, 2));
+      console.log('[API] /chat/status - Submitting tool outputs for function calls:', JSON.stringify(tool_outputs, null, 2));
       
       // 3. Submit tool outputs
       const submitRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/submit_tool_outputs`, {
