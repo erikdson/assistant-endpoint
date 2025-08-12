@@ -5,6 +5,7 @@ import fetch from 'node-fetch';
 import cors from 'cors';
 import multer from 'multer';
 import { FormData } from 'formdata-node';
+import { products, getValidProductIds, getProductById, getProductsByFilters } from '../products.js';
 
 const app = express();
 app.use(express.json());
@@ -240,6 +241,46 @@ const TOOL_FUNCTIONS = {
       additionalProperties: false,
       required: ["filters"]
     }
+  },
+  recommend_products: {
+    name: "recommend_products",
+    description: "Generate structured product recommendations based on user requirements and preferences. Use this when users ask for product suggestions, recommendations, or want to see specific products.",
+    strict: true,
+    parameters: {
+      type: "object",
+      properties: {
+        recommendations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              productId: { type: "string" },
+              matchScore: { type: "number", minimum: 0, maximum: 100 },
+              matchReason: { type: "string" },
+              highlights: {
+                type: "array", 
+                items: { type: "string" }
+              },
+              primaryBenefit: { type: "string" },
+              considerations: {
+                type: "array",
+                items: { type: "string" }
+              }
+            },
+            required: ["productId", "matchScore", "matchReason", "highlights", "primaryBenefit"],
+            additionalProperties: false
+          }
+        },
+        reasoning: { type: "string" },
+        totalMatches: { type: "number" },
+        topCriteria: {
+          type: "array",
+          items: { type: "string" }
+        }
+      },
+      required: ["recommendations", "reasoning", "totalMatches"],
+      additionalProperties: false
+    }
   }
 };
 
@@ -419,41 +460,34 @@ app.get('/api/chat/status', async (req, res) => {
     let statusData = await statusRes.json();
     console.log(`[API] /chat/status - threadId: ${threadId}, runId: ${runId}, status: ${statusData.status}`);
     // --- Tool call handling ---
-    if (statusData.status === 'requires_action') {
-      // 1. Fetch run steps to get tool calls
-      const stepsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}/steps`, {
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'OpenAI-Beta': 'assistants=v2'
-        }
-      });
-      const stepsData = await stepsRes.json();
-      console.log('[API] /chat/status - Full stepsData:', JSON.stringify(stepsData, null, 2));
+    if (statusData.status === 'requires_action' && statusData.required_action) {
+      console.log('[API] /chat/status - Required action:', JSON.stringify(statusData.required_action, null, 2));
+      
+      // Use the required_action field to get the exact tool calls that need responses
+      const requiredToolCalls = statusData.required_action.submit_tool_outputs?.tool_calls || [];
+      
       let toolCalls = [];
-      if (Array.isArray(stepsData.data)) {
-        for (const step of stepsData.data) {
-          if (step.type === 'tool_calls' && Array.isArray(step.step_details?.tool_calls)) {
-            for (const toolCall of step.step_details.tool_calls) {
-              // Only process function calls, not file_search or other built-in tools
-              if (toolCall.type === 'function') {
-                const tool_call_id = toolCall.id;
-                const functionName = toolCall.function?.name;
-                let functionArgs = {};
-                try {
-                  functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
-                } catch {}
-                toolCalls.push({ tool_call_id, functionName, functionArgs });
-                console.log('[API] /chat/status - Function call detected:', { tool_call_id, functionName, functionArgs });
-              } else {
-                console.log('[API] /chat/status - Skipping built-in tool call:', { id: toolCall.id, type: toolCall.type });
-              }
-            }
-          }
+      for (const toolCall of requiredToolCalls) {
+        const tool_call_id = toolCall.id;
+        const toolType = toolCall.type;
+        
+        if (toolCall.type === 'function') {
+          const functionName = toolCall.function?.name;
+          let functionArgs = {};
+          try {
+            functionArgs = JSON.parse(toolCall.function?.arguments || '{}');
+          } catch {}
+          toolCalls.push({ tool_call_id, functionName, functionArgs, toolType });
+          console.log('[API] /chat/status - Function call requiring response:', { tool_call_id, functionName, functionArgs });
+        } else {
+          // Built-in tools shouldn't appear in required_action, but handle just in case
+          console.log('[API] /chat/status - Unexpected built-in tool in required_action:', { tool_call_id, toolType });
         }
       }
       
       // 2. Process tool calls and generate outputs (only for function calls)
-      if (toolCalls.length === 0) {
+      const functionCalls = toolCalls.filter(tc => tc.toolType === 'function');
+      if (functionCalls.length === 0) {
         console.log('[API] /chat/status - No function calls to process, checking if run completed');
         // No function calls need responses, check if run is complete
         const recheckRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
@@ -469,24 +503,77 @@ app.get('/api/chat/status', async (req, res) => {
       const tool_outputs = toolCalls.map(tc => {
         let output = {};
         
-        if (tc.functionName === 'generate_product_filters') {
-          // For now, return the function arguments as-is (the AI will have structured them correctly)
-          // In a production system, you might want to validate against the schema here
-          output = {
-            filters: tc.functionArgs.filters || {},
-            explanation: tc.functionArgs.explanation || "Filters generated based on your requirements",
-            confidence: tc.functionArgs.confidence || 0.8
+        // Only process function calls, built-in tools don't need outputs
+        if (tc.toolType === 'function') {
+          if (tc.functionName === 'generate_product_filters') {
+            // For now, return the function arguments as-is (the AI will have structured them correctly)
+            // In a production system, you might want to validate against the schema here
+            output = {
+              filters: tc.functionArgs.filters || {},
+              explanation: tc.functionArgs.explanation || "Filters generated based on your requirements",
+              confidence: tc.functionArgs.confidence || 0.8
+            };
+          } else if (tc.functionName === 'recommend_products') {
+            // Process product recommendations with enhanced data from product catalog
+            console.log('[API] Processing recommend_products tool call:', tc.functionArgs);
+            
+            // Note: Only process if recommendations were explicitly requested
+            // The AI should only call this tool when users ask for recommendations
+            // TODO: Update OpenAI assistant instructions to be less recommendation-eager
+            
+            // Validate and enhance product recommendations with real product IDs
+            const validProductIds = getValidProductIds();
+            
+            let recommendations = tc.functionArgs.recommendations || [];
+            
+            // If AI generated invalid product IDs, replace with valid ones and enhance with real product data
+            recommendations = recommendations.map((rec, index) => {
+              if (!validProductIds.includes(rec.productId)) {
+                // Replace with a valid product ID based on index
+                const validId = validProductIds[index % validProductIds.length];
+                const realProduct = getProductById(validId);
+                console.log(`[API] Replacing invalid product ID ${rec.productId} with ${validId}`);
+                
+                // Enhance recommendation with real product data
+                return { 
+                  ...rec, 
+                  productId: validId,
+                  // Override with real product attributes
+                  highlights: realProduct ? [
+                    `${realProduct.loadCapacity}kg capacity`,
+                    `${realProduct.powerSource} power`,
+                    `${realProduct.operatingEnvironment} use`,
+                    ...realProduct.semanticTags.slice(0, 2)
+                  ] : rec.highlights,
+                  primaryBenefit: realProduct ? realProduct.description : rec.primaryBenefit
+                };
+              }
+              return rec;
+            });
+            
+            output = {
+              recommendations: recommendations,
+              reasoning: tc.functionArgs.reasoning || "Product recommendations based on your requirements",
+              totalMatches: tc.functionArgs.totalMatches || recommendations.length,
+              topCriteria: tc.functionArgs.topCriteria || [],
+              generatedAt: new Date().toISOString()
+            };
+            
+            console.log('[API] Generated recommendation output:', output);
+          } else {
+            // Default behavior for unknown function tools
+            output = tc.functionArgs;
+          }
+          
+          return {
+            tool_call_id: tc.tool_call_id,
+            output: JSON.stringify(output)
           };
         } else {
-          // Default behavior for unknown tools
-          output = tc.functionArgs;
+          // Built-in tools (like file_search) don't need outputs - skip them
+          return null;
         }
-        
-        return {
-          tool_call_id: tc.tool_call_id,
-          output: JSON.stringify(output)
-        };
-      });
+      }).filter(Boolean); // Remove null entries for built-in tools
       
       console.log('[API] /chat/status - Submitting tool outputs for function calls:', JSON.stringify(tool_outputs, null, 2));
       
@@ -616,6 +703,40 @@ app.get('/api/chat/thread-messages', async (req, res) => {
     res.json(messagesData);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Unknown error' });
+  }
+});
+
+// Product API endpoints
+app.get('/api/products', (req, res) => {
+  try {
+    const { filters } = req.query;
+    
+    if (filters) {
+      const parsedFilters = JSON.parse(filters);
+      const filteredProducts = getProductsByFilters(parsedFilters);
+      res.json(filteredProducts);
+    } else {
+      res.json(products);
+    }
+  } catch (error) {
+    console.error('[API] /products error:', error);
+    res.status(500).json({ error: 'Failed to fetch products' });
+  }
+});
+
+app.get('/api/products/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const product = getProductById(id);
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    res.json(product);
+  } catch (error) {
+    console.error('[API] /products/:id error:', error);
+    res.status(500).json({ error: 'Failed to fetch product' });
   }
 });
 
