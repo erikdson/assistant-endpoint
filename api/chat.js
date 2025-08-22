@@ -5,7 +5,10 @@ import fetch from 'node-fetch';
 import cors from 'cors';
 import multer from 'multer';
 import { FormData } from 'formdata-node';
-import { products, getValidProductIds, getProductById, getProductsByFilters } from '../products.js';
+import { products, getProductById, getProductsByFilters } from '../products.js';
+import ToolService from '../services/tool-service.js';
+import responsesRouter from './responses.js';
+import aiChatRouter from './ai-chat.js';
 
 const app = express();
 app.use(express.json());
@@ -35,254 +38,43 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
 }));
 
-// Tool function definitions - Updated to match exact user specification
-const TOOL_FUNCTIONS = {
-  generate_product_filters: {
-    name: "generate_product_filters",
-    description: "Turn user product requirements into structured filters for catalog narrowing.",
-    strict: false,
-    parameters: {
-      type: "object",
-      properties: {
-        filters: {
-          type: "array",
-          items: {
-            type: "object",
-            required: ["field", "type", "label", "value"],
-            properties: {
-              field: {
-                type: "string",
-                enum: [
-                  "loadCapacity",
-                  "liftHeight", 
-                  "operatingEnvironment",
-                  "floorSurface",
-                  "aisleWidth",
-                  "budgetRange",
-                  "loadType",
-                  "attachments",
-                  "operatingHours",
-                  "powerSource",
-                  "deliveryUrgency"
-                ]
-              },
-              type: {
-                type: "string",
-                enum: ["singleselect", "multiselect", "range", "text"]
-              },
-              label: {
-                type: "string"
-              },
-              options: {
-                type: "array",
-                items: { type: "string" }
-              },
-              min: {
-                type: "number"
-              },
-              max: {
-                type: "number" 
-              },
-              value: {
-                oneOf: [
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "budgetRange" },
-                        type: { const: "range" }
-                      }
-                    },
-                    then: {
-                      type: "object",
-                      properties: {
-                        min: { type: "number", minimum: 0 },
-                        max: { type: "number", minimum: 0 }
-                      },
-                      required: ["min", "max"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "powerSource" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["electric", "diesel", "lpg", "hybrid"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "operatingEnvironment" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["indoor", "outdoor", "mixed"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "floorSurface" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["smooth-concrete", "rough-concrete", "asphalt", "gravel"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "loadType" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["pallets", "bulk", "containers", "machinery", "mixed"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "attachments" },
-                        type: { const: "multiselect" }
-                      }
-                    },
-                    then: {
-                      type: "array",
-                      items: {
-                        type: "string",
-                        enum: ["forks", "clamp", "rotator", "side-shift", "push-pull"]
-                      }
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "operatingHours" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["light", "medium", "heavy", "continuous"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "deliveryUrgency" },
-                        type: { const: "singleselect" }
-                      }
-                    },
-                    then: {
-                      type: "string",
-                      enum: ["immediate", "standard", "planned", "flexible"]
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "loadCapacity" },
-                        type: { const: "range" }
-                      }
-                    },
-                    then: {
-                      type: "array",
-                      items: { type: "number" },
-                      minItems: 2,
-                      maxItems: 2
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "liftHeight" },
-                        type: { const: "range" }
-                      }
-                    },
-                    then: {
-                      type: "array",
-                      items: { type: "number" },
-                      minItems: 2,
-                      maxItems: 2
-                    }
-                  },
-                  {
-                    if: {
-                      properties: {
-                        field: { const: "aisleWidth" },
-                        type: { const: "range" }
-                      }
-                    },
-                    then: {
-                      type: "array",
-                      items: { type: "number" },
-                      minItems: 2,
-                      maxItems: 2
-                    }
-                  },
-                  { type: "string" }
-                ]
-              }
-            },
-            additionalProperties: false
-          }
-        }
+// Mount the new Responses API router
+app.use('/api/responses', responsesRouter);
+
+// Mount the AI Chat router (Vercel AI SDK compatible)
+app.use('/api', aiChatRouter);
+
+// API version and feature detection
+app.get('/api/version', (_, res) => {
+  res.json({
+    version: '2.0.0',
+    apis: {
+      assistant: {
+        available: true,
+        deprecated: process.env.USE_RESPONSES_API === 'true',
+        endpoints: ['/api/chat/start', '/api/chat/status', '/api/chat/result', '/api/chat/stream']
       },
-      additionalProperties: false,
-      required: ["filters"]
+      responses: {
+        available: process.env.USE_RESPONSES_API === 'true',
+        recommended: true,
+        endpoints: ['/api/responses/create', '/api/responses/continue']
+      }
+    },
+    features: {
+      streaming: true,
+      toolCalls: true,
+      fileUpload: true,
+      backwardCompatibility: true
+    },
+    migration: {
+      phase: process.env.USE_RESPONSES_API === 'true' ? 'responses-api' : 'assistant-api',
+      autoFallback: process.env.API_AUTO_FALLBACK === 'true'
     }
-  },
-  recommend_products: {
-    name: "recommend_products",
-    description: "Generate structured product recommendations based on user requirements and preferences. Use this when users ask for product suggestions, recommendations, or want to see specific products.",
-    strict: true,
-    parameters: {
-      type: "object",
-      properties: {
-        recommendations: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              productId: { type: "string" },
-              matchScore: { type: "number", minimum: 0, maximum: 100 },
-              matchReason: { type: "string" },
-              highlights: {
-                type: "array", 
-                items: { type: "string" }
-              },
-              primaryBenefit: { type: "string" },
-              considerations: {
-                type: "array",
-                items: { type: "string" }
-              }
-            },
-            required: ["productId", "matchScore", "matchReason", "highlights", "primaryBenefit"],
-            additionalProperties: false
-          }
-        },
-        reasoning: { type: "string" },
-        totalMatches: { type: "number" },
-        topCriteria: {
-          type: "array",
-          items: { type: "string" }
-        }
-      },
-      required: ["recommendations", "reasoning", "totalMatches"],
-      additionalProperties: false
-    }
-  }
-};
+  });
+});
+
+// Initialize tool service for consolidated tool management
+const toolService = new ToolService();
 
 // File upload endpoint - uploads files to OpenAI and returns file IDs
 app.post('/api/chat/upload', upload.any(), async (req, res) => {
@@ -500,80 +292,28 @@ app.get('/api/chat/status', async (req, res) => {
         return res.status(200).json({ status: recheckData.status });
       }
 
-      const tool_outputs = toolCalls.map(tc => {
-        let output = {};
-        
-        // Only process function calls, built-in tools don't need outputs
+      // Use consolidated tool service for processing
+      const tool_outputs = [];
+      for (const tc of toolCalls) {
         if (tc.toolType === 'function') {
-          if (tc.functionName === 'generate_product_filters') {
-            // For now, return the function arguments as-is (the AI will have structured them correctly)
-            // In a production system, you might want to validate against the schema here
-            output = {
-              filters: tc.functionArgs.filters || {},
-              explanation: tc.functionArgs.explanation || "Filters generated based on your requirements",
-              confidence: tc.functionArgs.confidence || 0.8
-            };
-          } else if (tc.functionName === 'recommend_products') {
-            // Process product recommendations with enhanced data from product catalog
-            console.log('[API] Processing recommend_products tool call:', tc.functionArgs);
+          try {
+            console.log(`[API] Processing tool call: ${tc.functionName} with args:`, tc.functionArgs);
+            const result = await toolService.executeCustomTool(tc.functionName, tc.functionArgs);
+            console.log(`[API] Tool ${tc.functionName} result:`, result);
             
-            // Note: Only process if recommendations were explicitly requested
-            // The AI should only call this tool when users ask for recommendations
-            // TODO: Update OpenAI assistant instructions to be less recommendation-eager
-            
-            // Validate and enhance product recommendations with real product IDs
-            const validProductIds = getValidProductIds();
-            
-            let recommendations = tc.functionArgs.recommendations || [];
-            
-            // If AI generated invalid product IDs, replace with valid ones and enhance with real product data
-            recommendations = recommendations.map((rec, index) => {
-              if (!validProductIds.includes(rec.productId)) {
-                // Replace with a valid product ID based on index
-                const validId = validProductIds[index % validProductIds.length];
-                const realProduct = getProductById(validId);
-                console.log(`[API] Replacing invalid product ID ${rec.productId} with ${validId}`);
-                
-                // Enhance recommendation with real product data
-                return { 
-                  ...rec, 
-                  productId: validId,
-                  // Override with real product attributes
-                  highlights: realProduct ? [
-                    `${realProduct.loadCapacity}kg capacity`,
-                    `${realProduct.powerSource} power`,
-                    `${realProduct.operatingEnvironment} use`,
-                    ...realProduct.semanticTags.slice(0, 2)
-                  ] : rec.highlights,
-                  primaryBenefit: realProduct ? realProduct.description : rec.primaryBenefit
-                };
-              }
-              return rec;
+            tool_outputs.push({
+              tool_call_id: tc.tool_call_id,
+              output: JSON.stringify(result)
             });
-            
-            output = {
-              recommendations: recommendations,
-              reasoning: tc.functionArgs.reasoning || "Product recommendations based on your requirements",
-              totalMatches: tc.functionArgs.totalMatches || recommendations.length,
-              topCriteria: tc.functionArgs.topCriteria || [],
-              generatedAt: new Date().toISOString()
-            };
-            
-            console.log('[API] Generated recommendation output:', output);
-          } else {
-            // Default behavior for unknown function tools
-            output = tc.functionArgs;
+          } catch (error) {
+            console.error(`[API] Error executing tool ${tc.functionName}:`, error);
+            tool_outputs.push({
+              tool_call_id: tc.tool_call_id,
+              output: JSON.stringify({ error: error.message })
+            });
           }
-          
-          return {
-            tool_call_id: tc.tool_call_id,
-            output: JSON.stringify(output)
-          };
-        } else {
-          // Built-in tools (like file_search) don't need outputs - skip them
-          return null;
         }
-      }).filter(Boolean); // Remove null entries for built-in tools
+      }
       
       console.log('[API] /chat/status - Submitting tool outputs for function calls:', JSON.stringify(tool_outputs, null, 2));
       
@@ -703,6 +443,268 @@ app.get('/api/chat/thread-messages', async (req, res) => {
     res.json(messagesData);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Unknown error' });
+  }
+});
+
+// Helper functions for streaming are now handled by the service layer
+
+// New streaming endpoint using existing Assistant API
+app.post('/api/chat/stream', async (req, res) => {
+  try {
+    console.log('[API] /chat/stream - Starting streaming response with Assistant API');
+    
+    // Set up Server-Sent Events headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
+
+    const { message, threadId, requirements = {}, context = {} } = req.body;
+
+    // Create enhanced message with context (similar to existing implementation)
+    let enhancedMessage = `${message}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 CONTEXT: Please use the following requirements and system information for your response:
+
+Current Context: ${JSON.stringify(context)}
+Requirements: ${JSON.stringify(requirements)}
+
+Instructions:
+- ALWAYS use generate_product_filters for product-related requests
+- Be conversational and helpful
+- Provide expert advice on forklift selection
+- Focus on matching user needs with product capabilities`;
+
+    console.log('[API] /chat/stream - Enhanced message created');
+    
+    // Send initial status
+    res.write(`data: ${JSON.stringify({ 
+      type: 'status', 
+      status: 'starting' 
+    })}\n\n`);
+
+    // Use existing Assistant API approach but poll more frequently for streaming effect
+    let currentThreadId = threadId;
+    if (!currentThreadId || !currentThreadId.startsWith('thread_')) {
+      currentThreadId = null;
+    }
+
+    // 1. Start the assistant run (same as existing implementation)
+    const startRes = await fetch(`https://api.openai.com/v1/threads${currentThreadId ? `/${currentThreadId}` : ''}/runs`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
+      },
+      body: JSON.stringify(currentThreadId ? {
+        assistant_id: process.env.OPENAI_ASSISTANT_ID,
+        additional_messages: [{ role: 'user', content: enhancedMessage }],
+        tools: toolService.getAllTools()
+      } : {
+        assistant_id: process.env.OPENAI_ASSISTANT_ID,
+        thread: {
+          messages: [{ role: 'user', content: enhancedMessage }]
+        },
+        tools: toolService.getAllTools()
+      })
+    });
+
+    console.log('[API] /chat/stream - Start response status:', startRes.status);
+    
+    if (!startRes.ok) {
+      const errorText = await startRes.text();
+      console.error('[API] /chat/stream - Start API error:', errorText);
+      throw new Error(`OpenAI Assistant API error: ${startRes.status} - ${errorText}`);
+    }
+
+    const startData = await startRes.json();
+    console.log('[API] /chat/stream - Start response:', JSON.stringify(startData, null, 2));
+    
+    if (!startData.thread_id || !startData.id) {
+      const errorMessage = typeof startData.error === 'string' 
+        ? startData.error 
+        : JSON.stringify(startData.error) || 'Failed to start assistant run';
+      console.error('[API] /chat/stream - Start failed:', errorMessage);
+      throw new Error(errorMessage);
+    }
+    
+    const { thread_id: newThreadId, id: runId } = startData;
+    
+    res.write(`data: ${JSON.stringify({ 
+      type: 'status', 
+      status: 'processing',
+      threadId: newThreadId
+    })}\n\n`);
+
+    // 2. Poll for completion with streaming updates
+    let status = 'queued';
+    let attempts = 0;
+    const maxAttempts = 60; // Increased for streaming
+    let lastMessageCount = 0;
+    
+    while (status !== 'completed' && status !== 'failed' && attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, 500)); // Poll every 500ms for more responsive streaming
+      
+      // Check run status
+      const statusRes = await fetch(`https://api.openai.com/v1/threads/${newThreadId}/runs/${runId}`, {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2'
+        }
+      });
+      const statusData = await statusRes.json();
+      status = statusData.status;
+      
+      // Send status updates
+      if (status !== statusData.status) {
+        res.write(`data: ${JSON.stringify({ 
+          type: 'status', 
+          status: status
+        })}\n\n`);
+      }
+      
+      // Try to get partial responses by checking messages
+      try {
+        const messagesRes = await fetch(`https://api.openai.com/v1/threads/${newThreadId}/messages`, {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'OpenAI-Beta': 'assistants=v2'
+          }
+        });
+        const messagesData = await messagesRes.json();
+        
+        if (messagesData.data && messagesData.data.length > lastMessageCount) {
+          // New message(s) available - stream the latest assistant message
+          const latestMessages = messagesData.data.slice(0, messagesData.data.length - lastMessageCount);
+          const assistantMessages = latestMessages.filter(msg => msg.role === 'assistant');
+          
+          for (const msg of assistantMessages) {
+            const content = msg.content.map(c => c.text?.value || '').join('\n');
+            if (content.trim()) {
+              res.write(`data: ${JSON.stringify({ 
+                type: 'content', 
+                text: content
+              })}\n\n`);
+            }
+          }
+          
+          lastMessageCount = messagesData.data.length;
+        }
+      } catch (messageError) {
+        console.log('[API] /chat/stream - Could not fetch intermediate messages:', messageError.message);
+      }
+      
+      // Handle tool calls (same as existing implementation)
+      if (status === 'requires_action' && statusData.required_action?.type === 'submit_tool_outputs') {
+        res.write(`data: ${JSON.stringify({ 
+          type: 'status', 
+          status: 'processing_tools'
+        })}\n\n`);
+        
+        // Process tool calls (reuse existing logic)
+        const toolCalls = statusData.required_action.submit_tool_outputs.tool_calls.map(tc => ({
+          toolType: tc.type,
+          tool_call_id: tc.id,
+          functionName: tc.function?.name,
+          functionArgs: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}
+        }));
+
+        const tool_outputs = [];
+        for (const tc of toolCalls) {
+          if (tc.toolType === 'function') {
+            try {
+              console.log(`[API] Processing streaming tool call: ${tc.functionName}`);
+              const result = await toolService.executeCustomTool(tc.functionName, tc.functionArgs);
+              
+              // Send tool result for UI
+              res.write(`data: ${JSON.stringify({ 
+                type: 'tool_result',
+                toolName: tc.functionName,
+                result: result
+              })}\n\n`);
+              
+              tool_outputs.push({
+                tool_call_id: tc.tool_call_id,
+                output: JSON.stringify(result)
+              });
+            } catch (error) {
+              console.error(`[API] Error in streaming tool execution ${tc.functionName}:`, error);
+              tool_outputs.push({
+                tool_call_id: tc.tool_call_id,
+                output: JSON.stringify({ error: error.message })
+              });
+            }
+          }
+        }
+
+        // Submit tool outputs
+        await fetch(`https://api.openai.com/v1/threads/${newThreadId}/runs/${runId}/submit_tool_outputs`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+            'OpenAI-Beta': 'assistants=v2'
+          },
+          body: JSON.stringify({ tool_outputs })
+        });
+      }
+      
+      attempts++;
+    }
+
+    if (status !== 'completed') {
+      throw new Error('Assistant run did not complete in time');
+    }
+
+    // Get final messages - fetch ALL messages to ensure we get the complete response
+    const finalMessagesRes = await fetch(`https://api.openai.com/v1/threads/${newThreadId}/messages`, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
+      }
+    });
+    const finalMessagesData = await finalMessagesRes.json();
+    console.log('[API] /chat/stream - Final messages:', JSON.stringify(finalMessagesData, null, 2));
+    
+    // Send any remaining content - get the latest assistant messages
+    if (finalMessagesData.data && Array.isArray(finalMessagesData.data)) {
+      // Get all assistant messages, most recent first
+      const allAssistantMessages = finalMessagesData.data
+        .filter(msg => msg.role === 'assistant')
+        .sort((a, b) => b.created_at - a.created_at);
+      
+      // Send the most recent assistant message if we haven't sent it yet
+      if (allAssistantMessages.length > 0) {
+        const latestMessage = allAssistantMessages[0];
+        const content = latestMessage.content.map(c => c.text?.value || '').join('\n');
+        
+        if (content.trim()) {
+          console.log('[API] /chat/stream - Sending final assistant content:', content);
+          res.write(`data: ${JSON.stringify({ 
+            type: 'content', 
+            text: content
+          })}\n\n`);
+        }
+      }
+    }
+    
+    // Send completion event
+    res.write(`data: ${JSON.stringify({ 
+      type: 'done',
+      threadId: newThreadId
+    })}\n\n`);
+    res.end();
+    
+  } catch (err) {
+    console.error('[API] /chat/stream error:', err);
+    res.write(`data: ${JSON.stringify({ 
+      type: 'error', 
+      error: err.message || 'Streaming failed' 
+    })}\n\n`);
+    res.end();
   }
 });
 

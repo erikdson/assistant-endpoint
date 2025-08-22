@@ -164,13 +164,109 @@ export const getValidProductIds = () => products.map(p => p.id);
 // Get product by ID
 export const getProductById = (id) => products.find(p => p.id === id);
 
-// Get products matching filters
+// Get products matching filters - Enhanced with range-based filtering support
 export const getProductsByFilters = (filters) => {
   return products.filter(product => {
-    // Basic filtering logic - can be enhanced based on requirements
-    if (filters.powerSource && product.powerSource !== filters.powerSource) return false;
-    if (filters.loadCapacity && product.loadCapacity < filters.loadCapacity) return false;
-    if (filters.operatingEnvironment && product.operatingEnvironment !== filters.operatingEnvironment) return false;
+    // Power source filtering
+    if (filters.powerSource && product.powerSource !== filters.powerSource) {
+      return false;
+    }
+    
+    // Operating environment filtering (mixed environment products match any requirement)
+    if (filters.operatingEnvironment && 
+        product.operatingEnvironment !== filters.operatingEnvironment && 
+        product.operatingEnvironment !== 'mixed') {
+      return false;
+    }
+    
+    // Load capacity range filtering
+    if (filters.loadCapacity) {
+      if (Array.isArray(filters.loadCapacity) && filters.loadCapacity.length === 2) {
+        const [minCapacity, maxCapacity] = filters.loadCapacity;
+        if (product.loadCapacity < minCapacity || product.loadCapacity > maxCapacity) {
+          return false;
+        }
+      } else if (typeof filters.loadCapacity === 'number') {
+        // Legacy support - treat single number as minimum capacity
+        if (product.loadCapacity < filters.loadCapacity) {
+          return false;
+        }
+      }
+    }
+    
+    // Lift height range filtering
+    if (filters.liftHeight && Array.isArray(filters.liftHeight) && filters.liftHeight.length === 2) {
+      const [minHeight, maxHeight] = filters.liftHeight;
+      if (product.liftHeight < minHeight || product.liftHeight > maxHeight) {
+        return false;
+      }
+    }
+    
+    // Budget range filtering
+    if (filters.budgetRange) {
+      let minBudget, maxBudget;
+      
+      if (typeof filters.budgetRange === 'object' && filters.budgetRange.min !== undefined) {
+        // Object format: { min: 40000, max: 60000 }
+        minBudget = filters.budgetRange.min;
+        maxBudget = filters.budgetRange.max;
+      } else if (Array.isArray(filters.budgetRange) && filters.budgetRange.length === 2) {
+        // Array format: [40000, 60000]
+        [minBudget, maxBudget] = filters.budgetRange;
+      }
+      
+      if (minBudget !== undefined && maxBudget !== undefined) {
+        if (product.listPrice < minBudget || product.listPrice > maxBudget) {
+          return false;
+        }
+      }
+    }
+    
+    // Aisle width range filtering
+    if (filters.aisleWidth && Array.isArray(filters.aisleWidth) && filters.aisleWidth.length === 2) {
+      const [minWidth, maxWidth] = filters.aisleWidth;
+      if (product.aisleWidth < minWidth || product.aisleWidth > maxWidth) {
+        return false;
+      }
+    }
+    
+    // Floor surface filtering
+    if (filters.floorSurface) {
+      if (!product.floorSurface || !product.floorSurface.includes(filters.floorSurface)) {
+        return false;
+      }
+    }
+    
+    // Load type filtering
+    if (filters.loadType && product.loadType !== filters.loadType && product.loadType !== 'mixed') {
+      return false;
+    }
+    
+    // Attachments filtering (product must support all requested attachments)
+    if (filters.attachments && Array.isArray(filters.attachments)) {
+      const requiredAttachments = filters.attachments;
+      const productAttachments = product.attachments || [];
+      
+      for (const required of requiredAttachments) {
+        if (!productAttachments.includes(required)) {
+          return false;
+        }
+      }
+    }
+    
+    // Operating hours filtering
+    if (filters.operatingHours) {
+      // Define operating hours hierarchy: light < medium < heavy < continuous
+      const hoursHierarchy = { light: 1, medium: 2, heavy: 3, continuous: 4 };
+      const requiredLevel = hoursHierarchy[filters.operatingHours] || 1;
+      const productLevel = hoursHierarchy[product.operatingHours] || 1;
+      
+      // Product must support the required operating hours level or higher
+      if (productLevel < requiredLevel) {
+        return false;
+      }
+    }
+    
     return true;
   });
 };
