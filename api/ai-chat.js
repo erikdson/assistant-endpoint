@@ -32,10 +32,12 @@ const promptBuilder = new PromptBuilderService();
 const requirementsFormatter = new RequirementsFormatter();
 const documentExtractor = new DocumentExtractor();
 
-// Vercel AI SDK compatible endpoint with file upload support
+// DEPRECATED: Legacy endpoint with text markers
+// New implementations should use /api/responses for proper SSE streaming
+// This endpoint will be removed in a future version
 router.post('/ai-chat', upload.array('files', 5), async (req, res) => {
   try {
-    console.log('[AI Chat] Raw request body received:', {
+    console.log('[AI Chat] DEPRECATED ENDPOINT - Raw request body received:', {
       hasBody: !!req.body,
       bodyKeys: req.body ? Object.keys(req.body) : [],
       bodyPreview: req.body ? JSON.stringify(req.body).substring(0, 200) + '...' : 'no body',
@@ -400,13 +402,16 @@ router.post('/ai-chat', upload.array('files', 5), async (req, res) => {
           
           console.log(`[AI Chat] Tool ${functionName} executed successfully:`, result);
           
-          res.write(`\n\n--- TOOL_OUTPUT_START:${functionName} ---\n`);
+          // DEPRECATED: This endpoint uses legacy text markers
+          // New implementations should use the /api/responses endpoint with proper SSE
+          res.write(`\n\n=== TOOL RESULT: ${functionName} ===\n`);
           res.write(JSON.stringify(result, null, 2));
-          res.write(`\n--- TOOL_OUTPUT_END:${functionName} ---\n\n`);
+          res.write(`\n=== END TOOL RESULT ===\n\n`);
           
         } catch (error) {
           console.error(`[AI Chat] Error executing tool ${toolCall.function?.name}:`, error);
-          res.write(`\n\n--- TOOL_ERROR:${toolCall.function?.name} ---\nError: ${error.message}\n--- TOOL_ERROR_END:${toolCall.function?.name} ---\n\n`);
+          // DEPRECATED: This endpoint uses legacy text markers
+          res.write(`\n\n=== TOOL ERROR: ${toolCall.function?.name} ===\nError: ${error.message}\n=== END TOOL ERROR ===\n\n`);
         }
       }
     }

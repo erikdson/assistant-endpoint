@@ -1,7 +1,14 @@
 import express from 'express';
+import multer from 'multer';
 import ConversationService from '../services/conversation-service.js';
 
 const router = express.Router();
+
+// Configure multer for file uploads
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 // Lazy-load conversation service to ensure dotenv is loaded first
 let conversationService = null;
@@ -18,7 +25,7 @@ function getConversationService() {
  */
 
 // Create a new streaming conversation using Responses API
-router.post('/create', async (req, res) => {
+router.post('/create', upload.array('files', 5), async (req, res) => {
   try {
     console.log('[Responses API] /create - Starting new conversation');
     
@@ -34,24 +41,42 @@ router.post('/create', async (req, res) => {
     if (!message) {
       res.write(`data: ${JSON.stringify({ 
         type: 'error', 
-        error: 'Message is required' 
-      })}\\n\\n`);
+        error: 'Message is required',
+        timestamp: new Date().toISOString()
+      })}\n\n`);
       return res.end();
     }
 
-    // Send initial status
-    res.write(`data: ${JSON.stringify({ 
-      type: 'status', 
-      status: 'starting',
-      api: 'responses'
-    })}\\n\\n`);
+    // Handle file uploads if present
+    let documentContext = '';
+    if (req.files && req.files.length > 0) {
+      console.log('[Responses API] Processing uploaded files:', req.files.length);
+      // Note: Removed file processing status for AI SDK compatibility
+
+      // Import DocumentExtractor
+      const { DocumentExtractor } = await import('../services/document-extractor-service.js');
+      const documentExtractor = new DocumentExtractor();
+      
+      for (const file of req.files) {
+        try {
+          const extractedText = await documentExtractor.extractFromFile(file);
+          documentContext += `\n\n--- File: ${file.originalname} ---\n${extractedText}\n--- End of ${file.originalname} ---`;
+          console.log('[Responses API] Extracted text from:', file.originalname, '- Length:', extractedText.length);
+        } catch (extractError) {
+          console.error('[Responses API] File extraction error:', extractError);
+          documentContext += `\n\n--- File: ${file.originalname} (extraction failed) ---`;
+        }
+      }
+    }
+
+    // Note: Removed initial status for AI SDK compatibility
 
     // Build messages for true Responses API
     const messages = [];
     
-    // Add system message with context
-    if (systemInstructions || Object.keys(requirements).length > 0) {
-      const systemContent = getConversationService().buildSystemMessage(systemInstructions, requirements, context);
+    // Add system message with context (including document context)
+    if (systemInstructions || Object.keys(requirements).length > 0 || documentContext) {
+      const systemContent = getConversationService().buildSystemMessage(systemInstructions, requirements, context, documentContext);
       messages.push({
         role: 'system',
         content: systemContent
@@ -67,6 +92,8 @@ router.post('/create', async (req, res) => {
     // Get all available tools
     const allTools = getConversationService().tools.getAllTools();
     
+    // Note: Removed processing status for AI SDK compatibility
+
     // Create true streaming response using Responses API
     const response = await getConversationService().openai.createResponse(messages, allTools, 'gpt-4o');
     
@@ -74,6 +101,7 @@ router.post('/create', async (req, res) => {
     let buffer = '';
     let completed = false;
     let toolCallsBuffer = {}; // Track accumulated tool calls
+    let contentStreamingComplete = false; // Track when content is done
     
     // Handle the stream data
     response.body.on('data', async (chunk) => {
@@ -109,29 +137,13 @@ router.post('/create', async (req, res) => {
             if (parsed.choices && parsed.choices[0]) {
               const choice = parsed.choices[0];
               
-              // Send content deltas for true word-by-word streaming
+              // Send content deltas in OpenAI streaming format for Vercel AI SDK
               if (choice.delta?.content) {
                 const content = choice.delta.content;
                 console.log('[Responses API] Sending content delta:', JSON.stringify(content));
                 
-                // Enhanced debugging for newlines
-                const containsNewlines = content.includes('\n');
-                const containsDoubleNewlines = content.includes('\n\n');
-                const newlineCount = (content.match(/\n/g) || []).length;
-                console.log('[Responses API] Content analysis:', {
-                  length: content.length,
-                  containsNewlines,
-                  containsDoubleNewlines,
-                  newlineCount,
-                  charCodes: content.split('').map(c => c.charCodeAt(0))
-                });
-                
-                const contentMessage = { 
-                  type: 'content', 
-                  text: content
-                };
-                console.log('[Responses API] SSE message:', JSON.stringify(contentMessage));
-                res.write(`data: ${JSON.stringify(contentMessage)}\\n\\n`);
+                // Forward the original OpenAI streaming chunk for AI SDK compatibility
+                res.write(`data: ${JSON.stringify(parsed)}\n\n`);
               }
               
               // Handle tool calls (streaming accumulation)
@@ -157,12 +169,8 @@ router.post('/create', async (req, res) => {
                   
                   if (func?.name) {
                     toolCallsBuffer[index].function.name += func.name;
-                    console.log('[Responses API] Tool call started:', func.name);
-                    res.write(`data: ${JSON.stringify({ 
-                      type: 'tool_start',
-                      toolId: toolCallsBuffer[index].id,
-                      toolName: func.name
-                    })}\\n\\n`);
+                    console.log('[Responses API] Tool call detected:', func.name);
+                    // Don't send tool_start yet - wait for content to complete
                   }
                   
                   if (func?.arguments) {
@@ -175,16 +183,22 @@ router.post('/create', async (req, res) => {
               if (choice.finish_reason) {
                 console.log('[Responses API] Finish reason:', choice.finish_reason);
                 
-                // Process accumulated tool calls if any
+                // Mark content streaming as complete
+                if (!contentStreamingComplete) {
+                  contentStreamingComplete = true;
+                  // No status message needed for AI SDK
+                }
+                
+                // Process accumulated tool calls AFTER content is complete
                 if (choice.finish_reason === 'tool_calls' && Object.keys(toolCallsBuffer).length > 0) {
-                  res.write(`data: ${JSON.stringify({ 
-                    type: 'status',
-                    status: 'processing_tools'
-                  })}\\n\\n`);
+                  // Note: Removed status message for AI SDK compatibility
                   
-                  // Execute all accumulated tool calls
+                  // Execute all accumulated tool calls sequentially (in background for now)
+                  // Tool results will be included in a follow-up OpenAI API call
                   for (const [index, toolCall] of Object.entries(toolCallsBuffer)) {
                     try {
+                      console.log('[Responses API] Executing tool:', toolCall.function.name);
+                      
                       const toolArgs = JSON.parse(toolCall.function.arguments || '{}');
                       const toolResult = await getConversationService().tools.executeCustomTool(
                         toolCall.function.name, 
@@ -192,35 +206,35 @@ router.post('/create', async (req, res) => {
                       );
                       
                       console.log('[Responses API] Tool result for', toolCall.function.name, ':', toolResult);
-                      res.write(`data: ${JSON.stringify({ 
-                        type: 'tool_result',
-                        toolId: toolCall.id,
-                        toolName: toolCall.function.name,
-                        result: toolResult
-                      })}\\n\\n`);
+                      
+                      // TODO: For proper AI SDK integration, we should make a follow-up API call
+                      // with the tool results and stream the assistant's response to those results
+                      // For now, tools execute but results aren't displayed to maintain compatibility
+                      
                     } catch (toolError) {
                       console.error('[Responses API] Tool execution error:', toolError);
-                      res.write(`data: ${JSON.stringify({ 
-                        type: 'tool_result',
-                        toolId: toolCall.id,
-                        toolName: toolCall.function.name,
-                        result: { error: toolError.message }
-                      })}\\n\\n`);
                     }
                   }
                 }
                 
-                res.write(`data: ${JSON.stringify({ 
-                  type: 'status',
-                  status: choice.finish_reason === 'stop' ? 'completed' : 'tool_calls_completed'
-                })}\\n\\n`);
+                // Send final completion chunk for AI SDK
+                const finalChunk = {
+                  id: parsed.id || `chatcmpl-${Date.now()}`,
+                  object: 'chat.completion.chunk',
+                  created: parsed.created || Math.floor(Date.now() / 1000),
+                  model: parsed.model || 'gpt-4o',
+                  choices: [{
+                    index: 0,
+                    delta: {},
+                    finish_reason: choice.finish_reason === 'stop' ? 'stop' : 'tool_calls'
+                  }]
+                };
+                res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
                 
-                // Mark as completed and send done message
-                if (choice.finish_reason === 'stop' || choice.finish_reason === 'tool_calls') {
-                  res.write(`data: ${JSON.stringify({ type: 'done' })}\\n\\n`);
-                  completed = true;
-                  console.log('[Responses API] Sent done message on finish_reason:', choice.finish_reason);
-                }
+                // Send final done marker for AI SDK
+                res.write(`data: [DONE]\n\n`);
+                completed = true;
+                console.log('[Responses API] Sent completion on finish_reason:', choice.finish_reason);
               }
             }
           } catch (parseError) {
@@ -232,20 +246,30 @@ router.post('/create', async (req, res) => {
     
     response.body.on('end', () => {
       console.log('[Responses API] Stream ended, completed:', completed);
-      // Send final done message only if not already sent
+      // Send AI SDK compatible done marker if not already sent
       if (!completed) {
-        res.write(`data: ${JSON.stringify({ type: 'done' })}\\n\\n`);
-        console.log('[Responses API] Sent done message on end');
+        res.write(`data: [DONE]\n\n`);
+        console.log('[Responses API] Sent [DONE] marker on end');
       }
       res.end();
     });
     
     response.body.on('error', (error) => {
       console.error('[Responses API] Stream error:', error);
-      res.write(`data: ${JSON.stringify({ 
-        type: 'error', 
-        error: error.message 
-      })}\\n\\n`);
+      // Send AI SDK compatible error
+      const errorChunk = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'gpt-4o',
+        choices: [{
+          index: 0,
+          delta: { content: `Error: ${error.message}` },
+          finish_reason: 'stop'
+        }]
+      };
+      res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+      res.write(`data: [DONE]\n\n`);
       res.end();
     });
 
@@ -255,8 +279,9 @@ router.post('/create', async (req, res) => {
     console.error('[Responses API] /create error:', error);
     res.write(`data: ${JSON.stringify({ 
       type: 'error', 
-      error: error.message || 'Conversation failed' 
-    })}\\n\\n`);
+      error: error.message || 'Conversation failed',
+      timestamp: new Date().toISOString()
+    })}\n\n`);
     res.end();
   }
 });
@@ -277,8 +302,9 @@ router.post('/continue', async (req, res) => {
     if (!message) {
       res.write(`data: ${JSON.stringify({ 
         type: 'error', 
-        error: 'Message is required' 
-      })}\\n\\n`);
+        error: 'Message is required',
+        timestamp: new Date().toISOString()
+      })}\n\n`);
       return res.end();
     }
 
@@ -289,12 +315,7 @@ router.post('/continue', async (req, res) => {
       content: message
     });
 
-    // Send initial status
-    res.write(`data: ${JSON.stringify({ 
-      type: 'status', 
-      status: 'processing',
-      api: 'responses'
-    })}\\n\\n`);
+    // No initial status needed for AI SDK compatibility
 
     // Get tools and create response
     const allTools = getConversationService().tools.getAllTools();
@@ -306,10 +327,8 @@ router.post('/continue', async (req, res) => {
         const choice = chunk.choices[0];
         
         if (choice.delta?.content) {
-          res.write(`data: ${JSON.stringify({ 
-            type: 'content', 
-            text: choice.delta.content
-          })}\\n\\n`);
+          // Forward OpenAI streaming chunk for AI SDK compatibility
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         
         // Handle tool calls and other events...
@@ -317,15 +336,19 @@ router.post('/continue', async (req, res) => {
       }
     });
 
-    res.write(`data: ${JSON.stringify({ type: 'done' })}\\n\\n`);
+    res.write(`data: ${JSON.stringify({ 
+      type: 'done',
+      timestamp: new Date().toISOString()
+    })}\n\n`);
     res.end();
 
   } catch (error) {
     console.error('[Responses API] /continue error:', error);
     res.write(`data: ${JSON.stringify({ 
       type: 'error', 
-      error: error.message 
-    })}\\n\\n`);
+      error: error.message,
+      timestamp: new Date().toISOString()
+    })}\n\n`);
     res.end();
   }
 });
@@ -358,12 +381,7 @@ router.post('/debug-markdown', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
 
-  // Send initial status
-  res.write(`data: ${JSON.stringify({ 
-    type: 'status', 
-    status: 'starting',
-    api: 'responses'
-  })}\\n\\n`);
+  // No initial status needed for AI SDK compatibility
 
   // Test markdown content with various formatting (using actual newlines)
   const testContent = [
@@ -408,20 +426,17 @@ router.post('/debug-markdown', (req, res) => {
 
       const contentMessage = { 
         type: 'content', 
-        text: content
+        text: content,
+        timestamp: new Date().toISOString()
       };
-      res.write(`data: ${JSON.stringify(contentMessage)}\\n\\n`);
+      res.write(`data: ${JSON.stringify(contentMessage)}\n\n`);
       
       index++;
       setTimeout(sendNext, 100); // Delay to simulate streaming
     } else {
       // Send completion
-      res.write(`data: ${JSON.stringify({ 
-        type: 'status',
-        status: 'completed'
-      })}\\n\\n`);
-      
-      res.write(`data: ${JSON.stringify({ type: 'done' })}\\n\\n`);
+      // Send [DONE] marker for completion
+      res.write(`data: [DONE]\n\n`);
       console.log('[Responses API] Debug markdown test completed');
       res.end();
     }

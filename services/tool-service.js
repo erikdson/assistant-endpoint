@@ -269,8 +269,8 @@ class ToolService {
         }
       },
       suggest_follow_up_action: {
-        name: "suggest_follow_up_action",
-        description: "MANDATORY: Call this after analyzing uploaded files or documents containing requirements. Creates action buttons for users to apply requirements or take next steps.",
+        name: "suggest_follow_up_action", 
+        description: "Suggest contextual follow-up actions when the user would benefit from guidance. Only call this when: 1) User uploads documents but doesn't specify what to do next, 2) User asks open-ended questions about next steps, 3) Complex workflows need clarification. Do NOT call if user gives clear instructions (like 'apply these requirements' or 'recommend products').",
         parameters: {
           type: "object",
           properties: {
