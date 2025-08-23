@@ -267,6 +267,59 @@ class ToolService {
           required: ["requirements"],
           additionalProperties: false
         }
+      },
+      suggest_follow_up_action: {
+        name: "suggest_follow_up_action",
+        description: "MANDATORY: Call this after analyzing uploaded files or documents containing requirements. Creates action buttons for users to apply requirements or take next steps.",
+        parameters: {
+          type: "object",
+          properties: {
+            actionType: {
+              type: "string",
+              enum: ["apply_requirements", "generate_quote", "schedule_demo", "request_info", "configure_product", "compare_products"],
+              description: "Type of follow-up action to suggest"
+            },
+            priority: {
+              type: "string",
+              enum: ["high", "medium", "low"],
+              default: "medium",
+              description: "Priority level of the suggested action"
+            },
+            userMessage: {
+              type: "string",
+              description: "Friendly message to display to the user explaining the suggested action"
+            },
+            actionData: {
+              type: "object",
+              description: "Additional data needed for the action",
+              properties: {
+                requirements: {
+                  type: "object",
+                  description: "Extracted requirements for apply_requirements action"
+                },
+                productIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Product IDs for product-related actions"
+                },
+                context: {
+                  type: "string",
+                  description: "Additional context about the action"
+                }
+              },
+              additionalProperties: true
+            },
+            confidence: {
+              type: "number",
+              minimum: 0,
+              maximum: 1,
+              default: 0.8,
+              description: "Confidence score for the suggested action (0.0 to 1.0)"
+            }
+          },
+          required: ["actionType", "userMessage"],
+          additionalProperties: false
+        }
       }
     };
   }
@@ -318,6 +371,9 @@ class ToolService {
       
       case 'recommend_products':
         return this.executeRecommendProducts(args, systemRequirements);
+      
+      case 'suggest_follow_up_action':
+        return this.executeSuggestFollowUpAction(args);
       
       default:
         throw new Error(`Unknown custom tool: ${toolName}`);
@@ -628,6 +684,49 @@ class ToolService {
       reasoning: result.reasoning,
       topCriteria: result.topCriteria
     });
+    
+    return result;
+  }
+
+  // Execute suggest_follow_up_action tool
+  executeSuggestFollowUpAction(args) {
+    console.log('[ToolService] Processing suggest_follow_up_action with args:', args);
+    
+    // Validate required fields
+    if (!args.actionType || !args.userMessage) {
+      throw new Error('actionType and userMessage are required for suggest_follow_up_action');
+    }
+    
+    // Validate actionType is from allowed enum
+    const validActionTypes = ["apply_requirements", "generate_quote", "schedule_demo", "request_info", "configure_product", "compare_products"];
+    if (!validActionTypes.includes(args.actionType)) {
+      throw new Error(`Invalid actionType: ${args.actionType}. Must be one of: ${validActionTypes.join(', ')}`);
+    }
+    
+    // Validate priority if provided
+    const validPriorities = ["high", "medium", "low"];
+    const priority = args.priority || "medium";
+    if (!validPriorities.includes(priority)) {
+      throw new Error(`Invalid priority: ${priority}. Must be one of: ${validPriorities.join(', ')}`);
+    }
+    
+    // Validate confidence if provided
+    const confidence = args.confidence || 0.8;
+    if (confidence < 0 || confidence > 1) {
+      throw new Error('Confidence must be between 0.0 and 1.0');
+    }
+    
+    const result = {
+      actionType: args.actionType,
+      priority,
+      userMessage: args.userMessage,
+      actionData: args.actionData || {},
+      confidence,
+      timestamp: new Date().toISOString(),
+      id: `action_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
+    };
+    
+    console.log('[ToolService] Generated follow-up action:', result);
     
     return result;
   }

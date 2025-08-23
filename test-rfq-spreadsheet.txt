@@ -1,0 +1,19 @@
+Requirement,Value,Notes
+Company,Midwest Warehousing Solutions,
+Contact Person,John Smith,Operations Manager  
+Date,August 22 2024,
+Lift Capacity,5000 lbs,minimum required
+Lift Height,20 feet,maximum reach needed
+Power Type,Electric,preferred for indoor use
+Quantity,2 units,total needed
+Environment,Indoor warehouse,concrete floors
+Operating Hours,8 hours/day,5 days per week
+Side-shifting,Required,
+Fork positioning,Preferred,
+Backup alarm,Required,
+Backup lights,Required,
+Budget,$60000,total for both units
+Delivery Date,September 30 2024,firm requirement
+Use Case,Palletized goods,narrow aisles
+Operator Level,Intermediate,
+Maintenance,Within 50 miles,required support

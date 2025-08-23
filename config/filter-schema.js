@@ -58,7 +58,7 @@ export const FILTER_FIELD_DEFINITIONS = {
   operatingHours: {
     type: "singleselect",
     options: ["light", "medium", "heavy", "continuous"],
-    description: "Daily duty cycle: 'light'=few hours/day, 'medium'=intermittent, 'heavy'=full-shift, 'continuous'=24/7",
+    description: "Daily duty cycle: 'light'=1-4 hours/day, 'medium'=4-8 hours/day, 'heavy'=8+ hours/day, 'continuous'=24/7",
     example: "For 'heavy duty use' use 'heavy'"
   },
   powerSource: {

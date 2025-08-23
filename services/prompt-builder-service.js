@@ -15,17 +15,23 @@ class PromptBuilderService {
    * @param {Object} options - Configuration options
    * @param {Object} options.requirements - Raw requirements object
    * @param {Object} options.context - Session context (level, ids, etc.)
+   * @param {string} options.documentContext - Extracted text from uploaded documents
    * @param {string} options.customInstructions - Additional instructions
    * @returns {string} Complete system prompt
    */
   buildSystemPrompt(options = {}) {
-    const { requirements = {}, context = {}, customInstructions = '' } = options;
+    const { requirements = {}, context = {}, documentContext = '', customInstructions = '' } = options;
 
     let prompt = this.basePrompt;
 
     // Add requirements section if available
     if (Object.keys(requirements).length > 0) {
       prompt += this.buildRequirementsSection(requirements, context);
+    }
+
+    // Add document context section if documents were uploaded
+    if (documentContext && documentContext.trim()) {
+      prompt += this.buildDocumentSection(documentContext);
     }
 
     // Add context-specific instructions
@@ -146,6 +152,50 @@ Based on your requirements, I recommend the following options:
   }
 
   /**
+   * Build document context section with analysis instructions and persistent memory
+   */
+  buildDocumentSection(documentContext) {
+    let section = '\n\n=== UPLOADED DOCUMENTS CONTEXT ===\n\n';
+    
+    section += '📄 **DOCUMENT MEMORY**: You have access to uploaded documents containing customer requirements. This information remains available throughout the entire conversation for reference and analysis.\n\n';
+    
+    section += '**CRITICAL INSTRUCTIONS FOR DOCUMENT RETENTION**:\n';
+    section += '• **PERSISTENT MEMORY**: Remember ALL document content throughout this conversation\n';
+    section += '• **ALWAYS REFERENCE**: When asked about requirements, contact info, or details - refer back to document content\n';
+    section += '• **PERFECT RECALL**: You can access and analyze document content at any time during the chat\n';
+    section += '• **EXTRACT ON DEMAND**: User may ask you to find specific information from uploaded files\n';
+    section += '• **MAINTAIN CONTEXT**: Document content is part of your working memory for the entire session\n\n';
+    
+    section += '**DOCUMENT ANALYSIS OBJECTIVES**:\n';
+    section += '• Extract forklift requirements: capacity, fuel type, lift height, operating environment\n';
+    section += '• Identify customer details: company name, contact person, project info, timeline\n';
+    section += '• Parse technical specifications: attachments, features, operating conditions\n\n';
+    
+    section += '**🚨 CRITICAL: FOLLOW-UP ACTIONS REQUIRED**:\n';
+    section += '• **AFTER DOCUMENT ANALYSIS**: You MUST call suggest_follow_up_action tool when you extract meaningful requirements from uploaded files\n';
+    section += '• **ACTION TYPE**: Use "apply_requirements" when you identify clear forklift specifications that should be applied as filters\n';
+    section += '• **HIGH PRIORITY**: RFQ documents and requirement files always need follow-up actions\n';
+    section += '• **USER MESSAGE**: Create a helpful message like "Apply these requirements to find matching forklifts"\n';
+    section += '• **ACTION DATA**: Include extracted requirements in actionData.requirements field\n\n';
+    section += '• Extract budget constraints and delivery requirements\n';
+    section += '• Use generate_product_filters tool to apply extracted technical requirements\n\n';
+    
+    section += '**COMPLETE DOCUMENT CONTENT**:\n';
+    section += '```\n';
+    section += documentContext;
+    section += '\n```\n\n';
+    
+    section += '**INTERACTION GUIDELINES**:\n';
+    section += '1. **IMMEDIATE ANALYSIS**: Analyze documents upon upload and extract key requirements\n';
+    section += '2. **PROACTIVE EXTRACTION**: Apply filters automatically based on clear technical requirements\n';
+    section += '3. **DETAILED RECALL**: Answer specific questions about document content with exact details\n';
+    section += '4. **CONTEXTUAL REFERENCE**: Always mention document source when providing extracted information\n';
+    section += '5. **COMPREHENSIVE MEMORY**: Maintain full document context throughout entire conversation\n\n';
+    
+    return section;
+  }
+
+  /**
    * Build context-specific instructions based on business level
    */
   buildContextInstructions(context) {
@@ -251,6 +301,23 @@ Based on your requirements, I recommend the following options:
   • "What products do you recommend?" → Use recommend_products  
   • "Show me forklift recommendations" → Use recommend_products
   • "I need forklift suggestions" → Use recommend_products
+- **🚨 FOLLOW-UP ACTION GUIDELINES**: You MUST use suggest_follow_up_action tool when:
+  • **After document analysis**: When you've processed uploaded files containing requirements, RFQs, or specifications - THIS IS MANDATORY
+  • **After requirement extraction**: When you've successfully extracted meaningful requirements from user content
+  • **Natural workflow points**: When user would benefit from a clear next step to progress their procurement
+  • **High-value situations**: When the extracted requirements indicate a serious buying intent
+  • **IMMEDIATE ACTION**: Call this tool right after analyzing any uploaded document with requirements
+- **FOLLOW-UP ACTION TYPES**: Choose appropriate actionType:
+  • **apply_requirements**: When you've extracted requirements from documents/conversations and they should be applied to filters
+  • **generate_quote**: When user has specified detailed requirements and is ready for pricing
+  • **schedule_demo**: When user expresses interest in seeing equipment in person
+  • **request_info**: When user needs additional technical details or specifications
+  • **configure_product**: When user has identified specific products needing customization
+  • **compare_products**: When user is evaluating multiple options
+- **ACTION PRIORITY RULES**:
+  • **High priority**: For urgent deadlines, immediate needs, or high-value procurement projects
+  • **Medium priority**: For standard requirements extraction and routine follow-ups
+  • **Low priority**: For informational requests or preliminary inquiries
 - Maintain professional CPQ sales assistant persona
 - Format responses with proper markdown for optimal presentation
 - Provide expert guidance on forklift selection and configuration

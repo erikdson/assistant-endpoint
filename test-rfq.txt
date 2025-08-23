@@ -1,0 +1,23 @@
+RFQ - Midwest Warehousing Solutions
+Date: August 22, 2024
+Contact: John Smith, Operations Manager
+
+FORKLIFT REQUIREMENTS:
+
+1. Lift Capacity: 5,000 lbs minimum
+2. Lift Height: 20 feet maximum reach
+3. Power Type: Electric preferred for indoor use
+4. Quantity: 2 units needed
+5. Environment: Indoor warehouse, concrete floors
+6. Operating Hours: 8 hours per day, 5 days per week
+7. Special Requirements: 
+   - Side-shifting capability required
+   - Fork positioning system preferred
+   - Backup alarm and lights required
+8. Budget: $60,000 total for both units
+9. Delivery: Required by September 30, 2024
+
+Additional Notes:
+- Primary use for moving palletized goods in narrow aisles
+- Operator experience level: intermediate
+- Maintenance support required within 50 miles of facility
