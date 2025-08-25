@@ -1,11 +1,15 @@
 import express from 'express';
 import multer from 'multer';
 import { openai } from '@ai-sdk/openai';
-import { streamText, tool } from 'ai';
+import { streamText, tool, convertToModelMessages } from 'ai';
 import { z } from 'zod';
 import cors from 'cors';
+import PromptBuilderService from '../services/prompt-builder-service.js';
 
 const router = express.Router();
+
+// Initialize prompt builder service
+const promptBuilder = new PromptBuilderService();
 
 // Configure multer for file uploads with enhanced limits and filtering
 const upload = multer({ 
@@ -167,7 +171,238 @@ function validateRequest(req, res, next) {
   next();
 }
 
-// Modern AI SDK Core-based streaming endpoint
+// AI SDK v5 compatible endpoint (handles standard AI SDK format without files)
+router.post('/', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    console.log('[AI SDK v5] Processing AI SDK request');
+    console.log('[AI SDK v5] Request body keys:', Object.keys(req.body));
+    
+    const { messages = [] } = req.body;
+    
+    if (!messages || messages.length === 0) {
+      return res.status(400).json({ 
+        error: 'Invalid request',
+        details: 'Messages array is required'
+      });
+    }
+
+    // Extract the last user message
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.role !== 'user') {
+      return res.status(400).json({ 
+        error: 'Invalid request',
+        details: 'Last message must be from user'
+      });
+    }
+
+    // Extract text content from message parts
+    const textParts = lastMessage.parts?.filter(part => part.type === 'text') || [];
+    const messageText = textParts.map(part => part.text).join('\\n');
+    
+    console.log('[AI SDK v5] Message text:', messageText);
+    
+    // Check for file attachments in message parts
+    const fileParts = lastMessage.parts?.filter(part => part.type === 'file' || part.type === 'image') || [];
+    let documentContext = '';
+    
+    if (fileParts.length > 0) {
+      console.log(`[AI SDK v5] Found ${fileParts.length} file attachment(s)`);
+      
+      // Process each file part (data URLs)
+      for (const filePart of fileParts) {
+        try {
+          if (filePart.url && filePart.url.startsWith('data:')) {
+            // Extract content from data URL
+            const [header, base64Data] = filePart.url.split(',');
+            const mimeType = filePart.mediaType || header.split(';')[0].replace('data:', '');
+            
+            // Decode base64 content
+            const buffer = Buffer.from(base64Data, 'base64');
+            
+            // Create a file-like object for processing
+            const fileObject = {
+              originalname: `attachment_${Date.now()}`, // Generate a filename
+              mimetype: mimeType,
+              buffer: buffer,
+              size: buffer.length
+            };
+            
+            console.log(`[AI SDK v5] Processing data URL file: ${mimeType}, size: ${buffer.length}`);
+            const extractedText = await extractTextFromFile(fileObject);
+            documentContext += `\\n\\n--- File: ${fileObject.originalname} (${mimeType}) ---\\n${extractedText}\\n--- End of file ---`;
+          }
+        } catch (error) {
+          console.error(`[AI SDK v5] Error processing file attachment:`, error);
+          documentContext += `\\n\\n--- File attachment (extraction failed: ${error.message}) ---`;
+        }
+      }
+      
+      // Remove file parts from the last message since we've processed them into text
+      // Create a new message with only text parts
+      const cleanedLastMessage = {
+        ...lastMessage,
+        parts: textParts
+      };
+      
+      // Update the messages array with the cleaned message
+      const messagesWithoutFiles = [...messages.slice(0, -1), cleanedLastMessage];
+      messages.splice(0, messages.length, ...messagesWithoutFiles);
+    }
+
+    // Build system message with basic context in AI SDK v5 UI format
+    const systemMessage = {
+      role: 'system',
+      parts: [
+        {
+          type: 'text',
+          text: promptBuilder.buildSystemPrompt({
+            requirements: {},
+            context: {},
+            documentContext: documentContext
+          })
+        }
+      ]
+    };
+
+    // Prepare messages for AI SDK - convert UI messages to core messages
+    const uiMessages = [
+      systemMessage,
+      ...messages
+    ];
+    
+    // Convert to model messages format
+    const modelMessages = convertToModelMessages(uiMessages);
+
+    console.log('[AI SDK v5] Starting AI SDK streamText...');
+
+    // Use AI SDK Core for streaming
+    const result = await streamText({
+      model: openai('gpt-4o-mini'),
+      messages: modelMessages,
+      tools: {
+        generate_product_filters: tool({
+          description: 'Convert user requirements into structured filter criteria for the CPQ system.',
+          inputSchema: generateProductFiltersSchema,
+          execute: async ({ filters }) => {
+            console.log('[AI SDK v5] Tool: generate_product_filters executed');
+            return {
+              success: true,
+              filters: filters,
+              message: 'Product filters generated successfully',
+              confidence: 0.9
+            };
+          }
+        }),
+        recommend_products: tool({
+          description: 'Find matching forklift products based on user requirements.',
+          inputSchema: recommendProductsSchema,
+          execute: async ({ requirements, maxResults }) => {
+            console.log('[AI SDK v5] Tool: recommend_products executed');
+            
+            const mockProducts = [
+              {
+                id: 'FL-001',
+                name: 'Toyota 8FGCU25',
+                capacity: 2500,
+                liftHeight: 3000,
+                powerSource: requirements.powerSource || 'electric',
+                price: 45000,
+                matchScore: 0.95
+              },
+              {
+                id: 'FL-002',
+                name: 'Hyster H50FT',
+                capacity: 2270,
+                liftHeight: 3200,
+                powerSource: 'diesel',
+                price: 52000,
+                matchScore: 0.87
+              }
+            ];
+
+            return {
+              success: true,
+              recommendations: mockProducts.slice(0, maxResults),
+              totalMatches: mockProducts.length,
+              reasoning: 'Selected based on load capacity and power source requirements',
+              topCriteria: Object.keys(requirements)
+            };
+          }
+        }),
+        suggest_follow_up_action: tool({
+          description: 'Suggest contextual follow-up actions when the user would benefit from guidance.',
+          inputSchema: suggestFollowUpSchema,
+          execute: async (params) => {
+            console.log('[AI SDK v5] Tool: suggest_follow_up_action executed');
+            return {
+              success: true,
+              ...params,
+              timestamp: new Date().toISOString()
+            };
+          }
+        })
+      },
+    });
+
+    console.log('[AI SDK v5] Streaming to client...');
+    const streamStartTime = Date.now();
+
+    // Convert to UI stream response format
+    const uiResponse = result.toUIMessageStreamResponse({
+      sendSources: false,
+      sendReasoning: false,
+    });
+    
+    // Copy headers from AI SDK response
+    for (const [key, value] of uiResponse.headers.entries()) {
+      res.setHeader(key, value);
+    }
+    
+    // Stream the UI response
+    let chunkCount = 0;
+    let totalBytes = 0;
+    const reader = uiResponse.body.getReader();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      if (res.destroyed) {
+        console.log('[AI SDK v5] Client disconnected during streaming');
+        break;
+      }
+      
+      res.write(value);
+      chunkCount++;
+      totalBytes += value.length;
+    }
+    
+    res.end();
+    
+    // Log performance metrics
+    const totalTime = Date.now() - startTime;
+    const streamTime = Date.now() - streamStartTime;
+    
+    console.log(`[AI SDK v5] Request completed in ${totalTime}ms (streaming: ${streamTime}ms)`);
+    console.log(`[AI SDK v5] Streamed ${chunkCount} chunks, ${totalBytes} bytes total`);
+
+  } catch (error) {
+    const totalTime = Date.now() - startTime;
+    console.error(`[AI SDK v5] Error after ${totalTime}ms:`, error);
+    
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'Internal server error',
+        message: error.message,
+        requestTime: totalTime
+      });
+    }
+  }
+});
+
+// Modern AI SDK Core-based streaming endpoint (with file upload support)
 router.post('/create', upload.array('files', 10), validateRequest, async (req, res) => {
   const startTime = Date.now();
   
@@ -177,8 +412,28 @@ router.post('/create', upload.array('files', 10), validateRequest, async (req, r
     
     // Use the processed message from validation
     const message = req.body.processedMessage;
-    const requirements = req.body.requirements || {};
-    const context = req.body.context || {};
+    
+    // Parse JSON strings from FormData (when files are uploaded, data comes as strings)
+    let requirements = req.body.requirements || {};
+    let context = req.body.context || {};
+    
+    if (typeof requirements === 'string') {
+      try {
+        requirements = JSON.parse(requirements);
+      } catch (e) {
+        console.warn('[AI SDK Core] Failed to parse requirements JSON:', e.message);
+        requirements = {};
+      }
+    }
+    
+    if (typeof context === 'string') {
+      try {
+        context = JSON.parse(context);
+      } catch (e) {
+        console.warn('[AI SDK Core] Failed to parse context JSON:', e.message);
+        context = {};
+      }
+    }
     
     console.log('[AI SDK Core] Processed message:', message);
 
@@ -664,5 +919,6 @@ function buildSystemMessage(requirements, context, documentContext = '') {
 
   return systemContent;
 }
+
 
 export default router;

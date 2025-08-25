@@ -28,18 +28,11 @@ app.get('/', (req, res) => {
   });
 });
 
-// Modern AI SDK Core endpoints
+// AI SDK v5 chat endpoints
+app.use('/api/chat', chatModernRouter);
+
+// Alternative endpoint paths for compatibility
 app.use('/api/responses', chatModernRouter);
-
-// Add products endpoint to main API
-app.use('/api', chatModernRouter);
-
-// Legacy compatibility - redirect old endpoints
-app.use('/api/chat', (req, res) => {
-  console.log('[Legacy Redirect] Redirecting /api/chat to /api/responses/create');
-  req.url = '/create';
-  chatModernRouter(req, res);
-});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
@@ -64,8 +57,8 @@ app.listen(PORT, () => {
   console.log(`\\n🚀 Modern AI SDK Core Backend`);
   console.log(`📡 Server running on http://localhost:${PORT}`);
   console.log(`🔧 API Version: 2.0 (AI SDK Core)`);
-  console.log(`🎯 Main endpoint: http://localhost:${PORT}/api/responses/create`);
-  console.log(`🔗 Legacy compat: http://localhost:${PORT}/api/chat`);
+  console.log(`🎯 Main endpoint: http://localhost:${PORT}/api/chat/create`);
+  console.log(`🔗 Alt endpoint: http://localhost:${PORT}/api/responses/create`);
   console.log(`💡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log('');
 });
