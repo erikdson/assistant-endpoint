@@ -8,6 +8,7 @@
     "dev": "node api/chat.js"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^2.0.19",
     "ai": "^5.0.19",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
@@ -19,6 +20,7 @@
     "openai": "^5.15.0",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^5.4.54",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^3.25.76"
   }
 }
